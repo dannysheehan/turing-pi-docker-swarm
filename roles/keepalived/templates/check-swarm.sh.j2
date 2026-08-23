@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+/usr/bin/docker info >/dev/null 2>&1
+test "$(/usr/bin/docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}')" = active
+test "$(/usr/bin/docker info --format '{% raw %}{{.Swarm.ControlAvailable}}{% endraw %}')" = true

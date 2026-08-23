@@ -1,0 +1,93 @@
+---
+- name: Validate firewall facts and trusted networks
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.default_ipv4.address == ansible_host
+      - ansible_facts.default_ipv4.interface == keepalived_interface
+      - admin_cidr is match('^[0-9.]+/[0-9]+$')
+      - cluster_cidr is match('^[0-9.]+/[0-9]+$')
+    fail_msg: Inventory networking does not match the live node; refusing firewall changes.
+
+- name: Install the nft-compatible iptables frontend
+  ansible.builtin.apt:
+    name: iptables
+    state: present
+
+- name: Require DietPi's nft iptables alternative
+  ansible.builtin.command:
+    argv: [/usr/bin/readlink, -f, /usr/sbin/iptables]
+  register: swarm_firewall_iptables_backend
+  changed_when: false
+  failed_when: "'nft' not in swarm_firewall_iptables_backend.stdout"
+
+- name: Install the Ansible-owned firewall program
+  ansible.builtin.template:
+    src: apply-firewall.sh.j2
+    dest: /usr/local/sbin/ansible-swarm-firewall
+    owner: root
+    group: root
+    mode: "0700"
+  register: swarm_firewall_program
+
+- name: Install the firewall persistence service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ansible-swarm-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Ansible-owned cluster firewall chains
+      After=network-online.target docker.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/ansible-swarm-firewall
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+  register: swarm_firewall_unit
+
+- name: Apply and persist the dedicated firewall chains
+  ansible.builtin.systemd_service:
+    name: ansible-swarm-firewall.service
+    enabled: true
+    state: restarted
+    daemon_reload: "{{ swarm_firewall_unit.changed }}"
+  when: swarm_firewall_program.changed or swarm_firewall_unit.changed
+
+- name: Ensure firewall persistence is enabled
+  ansible.builtin.systemd_service:
+    name: ansible-swarm-firewall.service
+    enabled: true
+    state: started
+
+- name: Select firewall peer probes
+  ansible.builtin.set_fact:
+    swarm_firewall_manager_probe: >-
+      {{ (groups['managers'] | reject('equalto', inventory_hostname) | list | first)
+         if inventory_hostname in groups['managers'] else swarm_primary_manager }}
+    swarm_firewall_gossip_probe: >-
+      {{ groups['cluster'] | reject('equalto', inventory_hostname) | list | first }}
+
+- name: Verify manager control traffic from the node
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timeout
+      - "5"
+      - /bin/bash
+      - -c
+      - "exec 3<>/dev/tcp/{{ hostvars[swarm_firewall_manager_probe].ansible_host }}/2377"
+  changed_when: false
+
+- name: Verify Swarm gossip traffic from the node
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timeout
+      - "5"
+      - /bin/bash
+      - -c
+      - "exec 3<>/dev/tcp/{{ hostvars[swarm_firewall_gossip_probe].ansible_host }}/7946"
+  changed_when: false

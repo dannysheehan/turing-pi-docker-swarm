@@ -1,0 +1,13 @@
+---
+nfs_common_allowed_options:
+  - vers=3
+  - hard
+  - proto=tcp
+  - timeo=600
+  - retrans=2
+  - _netdev
+  - nofail
+  - x-systemd.automount
+nfs_common_rejected_options:
+  - soft
+  - nolock

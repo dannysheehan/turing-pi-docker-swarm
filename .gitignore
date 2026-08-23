@@ -1,0 +1,49 @@
+# Controller runtime and downloaded dependencies
+.ansible/
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+collections/ansible_collections/
+
+# Live inventory and deployment-specific configuration
+hosts.yml
+group_vars/all/local.yml
+group_vars/all/vault.yml
+
+# Credentials and local environment files
+.env
+.env.*
+!.env.example
+.vault-password
+.vault_pass
+*.vault-pass
+*.vault-password
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+secrets/
+private/
+
+# Ansible and operator artifacts
+*.retry
+*.log
+*.partial
+*.tar
+*.tar.gz
+*.tar.gz.enc
+
+# Historical local review evidence; retain only its public explanation
+plans/*.md
+!plans/README.md
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*~
+*.swp

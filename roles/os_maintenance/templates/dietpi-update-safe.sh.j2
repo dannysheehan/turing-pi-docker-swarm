@@ -1,0 +1,44 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+deadline_seconds=${1:-1800}
+log=/var/lib/dietpi/logs/dietpi-update.log
+before=$(sed -nE 's/^G_DIETPI_VERSION_(CORE|SUB|RC)=/\1=/p' /boot/dietpi/.version | tr '\n' ' ')
+start=${SECONDS}
+completion_seen=0
+
+descendants() {
+  local parent=$1 child
+  while read -r child; do
+    test -n "${child}" || continue
+    printf '%s\n' "${child}"
+    descendants "${child}"
+  done < <(/usr/bin/pgrep -P "${parent}" 2>/dev/null || true)
+}
+
+/usr/bin/setsid /boot/dietpi/dietpi-update 1 &
+updater_pid=$!
+
+while kill -0 "${updater_pid}" 2>/dev/null; do
+  if grep -Eq 'DietPi-Update.*Incremental patching to .* completed' "${log}" 2>/dev/null; then
+    completion_seen=1
+    while read -r child; do
+      test "$(cat "/proc/${child}/comm" 2>/dev/null || true)" = whiptail && kill -TERM "${child}"
+    done < <(descendants "${updater_pid}")
+  fi
+  if (( SECONDS - start >= deadline_seconds )); then
+    disown "${updater_pid}" 2>/dev/null || true
+    echo "DietPi updater exceeded ${deadline_seconds}s and was left running; inspect ${log}" >&2
+    exit 124
+  fi
+  sleep 2
+done
+
+set +e
+wait "${updater_pid}"
+rc=$?
+set -e
+after=$(sed -nE 's/^G_DIETPI_VERSION_(CORE|SUB|RC)=/\1=/p' /boot/dietpi/.version | tr '\n' ' ')
+test "${before}" = "${after}" || echo UPDATE_APPLIED=1
+echo "DIETPI_UPDATE_EXIT=${rc} COMPLETION_SEEN=${completion_seen}"
+exit "${rc}"

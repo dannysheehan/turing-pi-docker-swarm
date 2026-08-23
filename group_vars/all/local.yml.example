@@ -1,0 +1,14 @@
+---
+# Copy to local.yml and replace every deployment-specific value.
+cluster_cidr: 192.0.2.0/24
+admin_cidr: 192.0.2.0/24
+network_gateway: 192.0.2.1
+swarm_vip: 192.0.2.60
+swarm_expected_cluster_id: replace-with-existing-swarm-id
+timezone: Etc/UTC
+
+nfs_server: 192.0.2.2
+nfs_export: /replace/with/nfs/export
+
+portainer_database_secret_reference: op://Automation/Portainer/database-key
+portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase

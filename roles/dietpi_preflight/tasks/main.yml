@@ -1,0 +1,79 @@
+---
+- name: Inspect required DietPi paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ dietpi_preflight_required_paths }}"
+  register: dietpi_preflight_paths
+
+- name: Assert required DietPi paths exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: "{{ inventory_hostname }} is missing required DietPi path {{ item.item }}"
+  loop: "{{ dietpi_preflight_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read DietPi version
+  ansible.builtin.shell: |
+    set -o pipefail
+    . /boot/dietpi/.version
+    printf '%s.%s\n' "$G_DIETPI_VERSION_CORE" "$G_DIETPI_VERSION_SUB"
+  args:
+    executable: /bin/bash
+  register: dietpi_preflight_version
+  changed_when: false
+  check_mode: false
+
+- name: Read DietPi install stage
+  ansible.builtin.command: cat /boot/dietpi/.install_stage
+  register: dietpi_preflight_install_stage
+  changed_when: false
+  check_mode: false
+
+- name: Inspect cgroup memory controller
+  ansible.builtin.command: grep -qw memory /sys/fs/cgroup/cgroup.controllers
+  changed_when: false
+  check_mode: false
+
+- name: Inspect VXLAN kernel support
+  ansible.builtin.command: /usr/sbin/modprobe --dry-run vxlan
+  changed_when: false
+  check_mode: false
+
+- name: Inspect DietPi network configuration
+  ansible.builtin.slurp:
+    src: /etc/network/interfaces
+  register: dietpi_preflight_network_interfaces
+
+- name: Inspect DietPi userdata directory
+  ansible.builtin.stat:
+    path: /mnt/dietpi_userdata
+  register: dietpi_preflight_userdata
+
+- name: Assert DietPi node invariants
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.architecture == 'aarch64'
+      - ansible_facts.distribution == 'Debian'
+      - ansible_facts.distribution_major_version in dietpi_preflight_supported_debian_releases
+      - dietpi_preflight_version.stdout is version(dietpi_min_version, '>=')
+      - dietpi_preflight_install_stage.stdout | trim == '2'
+      - ansible_facts.hostname == inventory_hostname
+      - ansible_facts.default_ipv4.address == ansible_host
+      - ansible_facts.default_ipv4.interface == keepalived_interface
+      - (dietpi_preflight_network_interfaces.content | b64decode) is search('address\\s+' ~ (ansible_host | regex_escape))
+      - dietpi_preflight_userdata.stat.isdir
+      - dietpi_preflight_userdata.stat.writeable
+      - >-
+        (
+          ansible_facts.mounts
+          | selectattr('mount', 'equalto', '/')
+          | map(attribute='size_available')
+          | first
+          | int
+        ) > (dietpi_min_root_free_mb | int * 1024 * 1024)
+    fail_msg: >-
+      DietPi preflight failed on {{ inventory_hostname }}. If the static address
+      or interface differs, correct it with dietpi-config Network Options before
+      rerunning Ansible; ordinary convergence never rewrites DietPi networking.

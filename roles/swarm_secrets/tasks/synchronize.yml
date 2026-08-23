@@ -1,0 +1,201 @@
+---
+- name: Validate the Swarm secret definition
+  ansible.builtin.assert:
+    that:
+      - swarm_secrets_definition.name is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]+$')
+      - swarm_secrets_definition.source is match('^op://[^/]+/[^/]+/.+$')
+      - >-
+        swarm_secrets_definition.minimum_length | default(20) | int >= 20 or
+        swarm_secrets_definition.required_length | default(0) | int >= 20
+      - >-
+        swarm_secrets_definition.rotation_policy | default('rotate') in
+        ['rotate', 'forbid']
+      - >-
+        swarm_secrets_definition.rotation_policy | default('rotate') != 'forbid' or
+        (
+          swarm_secrets_definition.consumer_service is defined and
+          swarm_secrets_definition.consumer_target is defined
+        )
+    fail_msg: >-
+      Every Swarm secret requires a safe logical name, an op:// reference, and
+      a minimum length of at least 20 characters.
+
+- name: Derive metadata from the 1Password secret
+  ansible.builtin.set_fact:
+    swarm_secrets_content_length: "{{ swarm_secrets_value | length }}"
+    swarm_secrets_content_sha256: "{{ swarm_secrets_value | hash('sha256') }}"
+  vars:
+    swarm_secrets_value: >-
+      {{
+        lookup('community.general.onepassword', swarm_secrets_definition.source)
+        | b64encode | b64decode
+      }}
+  no_log: true
+
+- name: Reject an undersized 1Password secret
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          swarm_secrets_definition.required_length is defined and
+          swarm_secrets_content_length | int ==
+          swarm_secrets_definition.required_length | int
+        ) or (
+          swarm_secrets_definition.required_length is not defined and
+          swarm_secrets_content_length | int >=
+          swarm_secrets_definition.minimum_length | default(20) | int
+        )
+    fail_msg: >-
+      The referenced 1Password value does not meet its configured minimum
+      length.
+  no_log: true
+
+- name: Require printable ASCII when requested by the consumer
+  ansible.builtin.assert:
+    that:
+      - swarm_secrets_value is match('^[ -~]+$')
+    fail_msg: >-
+      The referenced 1Password value must contain printable ASCII characters
+      only for this consumer.
+  vars:
+    swarm_secrets_value: >-
+      {{
+        lookup('community.general.onepassword', swarm_secrets_definition.source)
+        | b64encode | b64decode
+      }}
+  when: swarm_secrets_definition.ascii_only | default(false) | bool
+  no_log: true
+
+- name: Derive the immutable Swarm secret name
+  ansible.builtin.set_fact:
+    swarm_secrets_desired_name: >-
+      {{ swarm_secrets_definition.name }}_{{ swarm_secrets_content_sha256[:12] }}
+    swarm_secrets_resolved_names: >-
+      {{
+        swarm_secrets_resolved_names | combine({
+          swarm_secrets_definition.name:
+            swarm_secrets_definition.name ~ '_' ~ swarm_secrets_content_sha256[:12]
+        })
+      }}
+  no_log: true
+
+- name: Inspect a consumer that forbids key rotation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - inspect
+      - "{{ swarm_secrets_definition.consumer_service }}"
+      - --format
+      - "{{ '{{json .Spec.TaskTemplate.ContainerSpec.Secrets}}' }}"
+  register: swarm_secrets_consumer
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: swarm_secrets_definition.rotation_policy | default('rotate') == 'forbid'
+
+- name: Reset protected consumer secret discovery
+  ansible.builtin.set_fact:
+    swarm_secrets_consumer_current_name: ""
+  when: swarm_secrets_definition.rotation_policy | default('rotate') == 'forbid'
+
+- name: Find the secret currently mounted at the protected target
+  ansible.builtin.set_fact:
+    swarm_secrets_consumer_current_name: >-
+      {{
+        (
+          (swarm_secrets_consumer.stdout | from_json | default([], true))
+          | selectattr('File.Name', 'equalto', swarm_secrets_definition.consumer_target)
+          | map(attribute='SecretName')
+          | list
+          | first
+        ) | default('')
+      }}
+  when:
+    - swarm_secrets_definition.rotation_policy | default('rotate') == 'forbid'
+    - swarm_secrets_consumer.rc == 0
+
+- name: Refuse unsupported rotation of a consumer encryption key
+  ansible.builtin.assert:
+    that:
+      - >-
+        swarm_secrets_consumer_current_name | default('') | length == 0 or
+        swarm_secrets_consumer_current_name == swarm_secrets_desired_name
+    fail_msg: >-
+      The consumer already uses a different secret at this protected target.
+      Automatic encryption-key rotation is not supported; restore the original
+      1Password value and follow an application-specific re-key procedure.
+  when: swarm_secrets_definition.rotation_policy | default('rotate') == 'forbid'
+  no_log: true
+
+- name: Require confirmation before encrypting an existing consumer database
+  ansible.builtin.assert:
+    that:
+      - swarm_secrets_definition.initial_activation_confirm | default(false) | bool
+    fail_msg: >-
+      This existing service does not yet use its protected encryption key.
+      Verify an application backup, then explicitly confirm the irreversible
+      initial encryption operation.
+  when:
+    - swarm_secrets_definition.rotation_policy | default('rotate') == 'forbid'
+    - swarm_secrets_consumer.rc == 0
+    - swarm_secrets_consumer_current_name | length == 0
+
+- name: Inspect the immutable Swarm secret
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - inspect
+      - "{{ swarm_secrets_desired_name }}"
+      - --format
+      - "{{ '{{json .Spec.Labels}}' }}"
+  register: swarm_secrets_existing
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Validate metadata on an existing Swarm secret
+  ansible.builtin.assert:
+    that:
+      - >-
+        (swarm_secrets_existing.stdout | from_json)[swarm_secrets_label_prefix ~ '.managed']
+        == 'true'
+      - >-
+        (swarm_secrets_existing.stdout | from_json)[swarm_secrets_label_prefix ~ '.logical-name']
+        == swarm_secrets_definition.name
+      - >-
+        (swarm_secrets_existing.stdout | from_json)[swarm_secrets_label_prefix ~ '.sha256']
+        == swarm_secrets_content_sha256
+    fail_msg: >-
+      A Swarm secret with the desired immutable name already exists but its
+      ownership or content-hash labels do not match. Refusing to replace it.
+  when: swarm_secrets_existing.rc == 0
+  no_log: true
+
+- name: Create the immutable Swarm secret from 1Password
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - create
+      - --label
+      - "{{ swarm_secrets_label_prefix }}.managed=true"
+      - --label
+      - >-
+        {{ swarm_secrets_label_prefix }}.logical-name={{ swarm_secrets_definition.name }}
+      - --label
+      - "{{ swarm_secrets_label_prefix }}.sha256={{ swarm_secrets_content_sha256 }}"
+      - "{{ swarm_secrets_desired_name }}"
+      - '-'
+    stdin: "{{ swarm_secrets_value }}"
+    stdin_add_newline: false
+  vars:
+    swarm_secrets_value: >-
+      {{
+        lookup('community.general.onepassword', swarm_secrets_definition.source)
+        | b64encode | b64decode
+      }}
+  when: swarm_secrets_existing.rc != 0
+  changed_when: true
+  no_log: true

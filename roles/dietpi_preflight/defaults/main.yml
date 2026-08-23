@@ -1,0 +1,11 @@
+---
+dietpi_preflight_required_paths:
+  - /boot/dietpi/.version
+  - /boot/dietpi/.install_stage
+  - /boot/dietpi/dietpi-update
+  - /boot/dietpi/dietpi-software
+  - /boot/dietpi/func/dietpi-globals
+  - /boot/dietpi/func/dietpi-set_software
+dietpi_preflight_supported_debian_releases:
+  - "12"
+  - "13"

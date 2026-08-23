@@ -1,0 +1,33 @@
+---
+- name: List managed versions of the Swarm secret
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - list
+      - --filter
+      - >-
+        label={{ swarm_secrets_label_prefix }}.logical-name={{ swarm_secrets_definition.name }}
+      - --format
+      - "{{ '{{.Name}}' }}"
+  register: swarm_secrets_managed_versions
+  changed_when: false
+  check_mode: false
+
+- name: Remove superseded versions of the Swarm secret
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - secret
+      - remove
+      - "{{ swarm_secrets_old_name }}"
+  loop: "{{ swarm_secrets_managed_versions.stdout_lines }}"
+  loop_control:
+    loop_var: swarm_secrets_old_name
+    label: "{{ swarm_secrets_old_name }}"
+  changed_when: true
+  when:
+    - swarm_secrets_old_name | length > 0
+    - >-
+      swarm_secrets_old_name !=
+      swarm_secrets_resolved_names[swarm_secrets_definition.name]

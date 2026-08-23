@@ -1,0 +1,9 @@
+---
+portainer_enabled: false
+portainer_stack_name: portainer
+portainer_stack_dir: /opt/ansible/portainer
+portainer_backup_secret_file: /root/.config/portainer-backup-passphrase
+portainer_database_secret_name: portainer_database_key  # pragma: allowlist secret
+portainer_database_secret_reference: ""
+portainer_database_encryption_confirm: false
+portainer_backup_passphrase: ""

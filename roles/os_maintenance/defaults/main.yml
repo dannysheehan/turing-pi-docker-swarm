@@ -1,0 +1,4 @@
+---
+os_maintenance_patches: true
+os_maintenance_reboot: true
+os_maintenance_update_timeout_seconds: 1800

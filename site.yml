@@ -1,0 +1,15 @@
+---
+- name: Bootstrap DietPi nodes
+  ansible.builtin.import_playbook: 00-bootstrap.yml
+
+- name: Provision DietPi nodes
+  ansible.builtin.import_playbook: 01-provision.yml
+
+- name: Reconcile Docker
+  ansible.builtin.import_playbook: 02-docker.yml
+
+- name: Reconcile Docker Swarm
+  ansible.builtin.import_playbook: 03-swarm-init.yml
+
+- name: Reconcile cluster services
+  ansible.builtin.import_playbook: 04-services.yml

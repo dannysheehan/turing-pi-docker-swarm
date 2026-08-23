@@ -1,0 +1,105 @@
+---
+- name: Emergency reboot one DietPi node into its installed kernel
+  hosts: cluster
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require exactly one limited host
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - emergency_reboot_confirm | default(false) | bool
+        fail_msg: Use --limit with exactly one node and -e emergency_reboot_confirm=true.
+
+    - name: Require all managers healthy before rebooting a manager
+      ansible.builtin.shell: >-
+        set -o pipefail && test "$(docker node ls --filter role=manager
+        --format '{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.ManagerStatus{{ '}}' }}' |
+        grep -Ec '^Ready .*(Reachable|Leader)')" -eq 3
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ swarm_primary_manager }}"
+      changed_when: false
+      check_mode: false
+      when: inventory_hostname in groups['managers']
+  tasks:
+    - name: Read original Swarm availability
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, node, inspect, "{{ inventory_hostname }}", --format, "{{ '{{.Spec.Availability}}' }}"]
+      delegate_to: "{{ swarm_primary_manager }}"
+      register: emergency_reboot_availability
+      changed_when: false
+      check_mode: false
+    - name: Reboot with Swarm availability restoration
+      block:
+        - name: Drain the emergency reboot target
+          ansible.builtin.command:
+            argv: [/usr/bin/docker, node, update, --availability, drain, "{{ inventory_hostname }}"]
+          delegate_to: "{{ swarm_primary_manager }}"
+          changed_when: emergency_reboot_availability.stdout | trim != 'drain'
+
+        - name: Reboot the target
+          ansible.builtin.reboot:
+            reboot_command: /bin/systemctl reboot --force
+            reboot_timeout: 600
+            connect_timeout: 30
+            post_reboot_delay: 15
+
+        - name: Wait for Docker after emergency reboot
+          ansible.builtin.command:
+            argv: [/usr/bin/docker, info, --format, "{{ '{{.Swarm.LocalNodeState}}' }}"]
+          register: emergency_reboot_docker
+          changed_when: false
+          check_mode: false
+          retries: 30
+          delay: 4
+          until: emergency_reboot_docker.stdout | trim == 'active'
+
+        - name: Require completed DietPi postboot state
+          ansible.builtin.command:
+            argv:
+              - /bin/bash
+              - -c
+              - test "$(cat /boot/dietpi/.install_stage)" = 2 && ! systemctl is-failed --quiet dietpi-postboot.service
+          changed_when: false
+          check_mode: false
+
+        - name: Verify synchronized time after emergency reboot
+          ansible.builtin.command:
+            argv: [/usr/bin/timedatectl, show, --property=NTPSynchronized, --value]
+          register: emergency_reboot_time
+          changed_when: false
+          failed_when: emergency_reboot_time.stdout | trim != 'yes'
+          check_mode: false
+          when: not ansible_check_mode
+
+        - name: Wait for Swarm readiness after emergency reboot
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/docker
+              - node
+              - inspect
+              - "{{ inventory_hostname }}"
+              - --format
+              - "{{ '{{.Status.State}}' }}"
+          delegate_to: "{{ swarm_primary_manager }}"
+          register: emergency_reboot_swarm
+          changed_when: false
+          check_mode: false
+          retries: 30
+          delay: 4
+          until: emergency_reboot_swarm.stdout | trim == 'ready'
+      always:
+        - name: Restore original Swarm availability
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/docker
+              - node
+              - update
+              - --availability
+              - "{{ emergency_reboot_availability.stdout | trim }}"
+              - "{{ inventory_hostname }}"
+          delegate_to: "{{ swarm_primary_manager }}"
+          changed_when: true
+          when: emergency_reboot_availability.stdout is defined

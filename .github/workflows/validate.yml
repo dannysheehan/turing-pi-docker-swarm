@@ -1,0 +1,41 @@
+---
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Create sanitized validation configuration
+        run: |
+          cp hosts.yml.example hosts.yml
+          cp group_vars/all/local.yml.example group_vars/all/local.yml
+
+      - name: Install locked dependencies
+        run: make setup
+
+      - name: Validate the repository
+        run: make validate

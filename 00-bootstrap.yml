@@ -1,0 +1,30 @@
+---
+# 00-bootstrap.yml — Ansible runtime bootstrap.
+#
+# Runs on clean DietPi nodes that have NO python3 / simplejson. Uses the
+# ansible.builtin.raw module, which requires only SSH (no target python), so it
+# can install the interpreters Ansible's string/module stack needs.
+# Idempotent: no-op fast when python3 is already present.
+# Run this before any other playbook. It must run across *all* nodes first,
+# because the main playbooks rely on python being installed.
+- name: Bootstrap python3 runtime for Ansible
+  hosts: all
+  gather_facts: false
+  gather_timeout: 30
+
+  tasks:
+    - name: Check for an existing python3
+      ansible.builtin.raw: "test -x /usr/bin/python3 && echo present || echo absent"
+      register: present_check
+      changed_when: false
+      check_mode: false
+      tags:
+        - bootstrap
+
+    - name: Install python3 when absent (raw is python-free)
+      ansible.builtin.raw: "apt-get update && apt-get -y install python3 python3-apt"
+      become: true
+      when: present_check.stdout | trim == 'absent'
+      changed_when: true
+      tags:
+        - bootstrap

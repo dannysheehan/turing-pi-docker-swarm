@@ -1,0 +1,21 @@
+---
+- name: Validate the Swarm secret synchronization endpoint
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == swarm_primary_manager
+      - inventory_hostname in groups['managers']
+      - swarm_secrets_definitions | length > 0
+    fail_msg: >-
+      Swarm secrets must be synchronized from the configured administrative
+      manager and at least one definition is required.
+
+- name: Initialize the resolved Swarm secret name map
+  ansible.builtin.set_fact:
+    swarm_secrets_resolved_names: {}
+
+- name: Synchronize requested secrets
+  ansible.builtin.include_tasks: synchronize.yml
+  loop: "{{ swarm_secrets_definitions }}"
+  loop_control:
+    loop_var: swarm_secrets_definition
+    label: "{{ swarm_secrets_definition.name | default('invalid') }}"

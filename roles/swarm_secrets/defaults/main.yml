@@ -1,0 +1,3 @@
+---
+swarm_secrets_definitions: []
+swarm_secrets_label_prefix: io.turing-pi.ansible.swarm-secret  # pragma: allowlist secret

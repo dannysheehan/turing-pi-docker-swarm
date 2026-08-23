@@ -1,0 +1,23 @@
+---
+- name: Maintain the worker canary
+  hosts: tpi-wrk-01
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: os_maintenance
+
+- name: Maintain the remaining workers
+  hosts: workers:!tpi-wrk-01
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: os_maintenance
+
+- name: Maintain managers one at a time
+  hosts: managers
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: os_maintenance

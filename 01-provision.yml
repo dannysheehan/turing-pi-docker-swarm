@@ -1,0 +1,12 @@
+---
+- name: Provision base node configuration
+  hosts: cluster
+  gather_facts: true
+  tasks:
+    - name: Validate DietPi node prerequisites
+      ansible.builtin.include_role:
+        name: dietpi_preflight
+
+    - name: Reconcile DietPi node configuration
+      ansible.builtin.include_role:
+        name: dietpi_base

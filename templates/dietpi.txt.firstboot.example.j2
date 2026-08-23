@@ -1,0 +1,14 @@
+# Reference fragment for preparing a new DietPi boot image.
+# AUTO_SETUP values are consumed during first boot, not managed afterwards.
+AUTO_SETUP_AUTOMATED=1
+AUTO_SETUP_TIMEZONE={{ timezone }}
+AUTO_SETUP_NET_HOSTNAME={{ inventory_hostname }}
+AUTO_SETUP_NET_USESTATIC=1
+AUTO_SETUP_NET_STATIC_IP={{ ansible_host }}
+AUTO_SETUP_NET_STATIC_MASK=255.255.255.0
+AUTO_SETUP_NET_STATIC_GATEWAY={{ network_gateway }}
+AUTO_SETUP_INSTALL_SOFTWARE_ID=162 134
+CONFIG_NTP_MODE={{ dietpi_ntp_mode }}
+CONFIG_NTP_MIRROR={{ dietpi_ntp_mirror }}
+CONFIG_CHECK_APT_UPDATES=1
+AUTO_SETUP_RAMLOG_MAXSIZE={{ dietpi_ramlog_size_mb }}

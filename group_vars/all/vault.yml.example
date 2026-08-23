@@ -1,0 +1,5 @@
+---
+# Copy to vault.yml, replace every placeholder, then encrypt vault.yml before use.
+vault_keepalived_auth_pass: exactly8
+vault_backup_passphrase: replace-with-a-long-random-passphrase
+vault_portainer_admin_password: replace-only-for-a-fresh-install

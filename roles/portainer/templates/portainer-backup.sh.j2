@@ -1,0 +1,32 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+service={{ portainer_stack_name }}_portainer
+source_dir={{ portainer_data_dir }}
+backup_dir={{ nfs_mount }}/backups/portainer
+pass_file={{ portainer_backup_secret_file }}
+replicas=1
+archive="${backup_dir}/portainer-$(date -u +%Y%m%dT%H%M%SZ).tar.gz.enc"
+
+restore_service() {
+  /usr/bin/docker service scale "${service}=${replicas}" >/dev/null
+}
+trap restore_service EXIT
+
+/usr/bin/findmnt --mountpoint {{ nfs_mount }} >/dev/null
+test -r "${pass_file}"
+replicas=$(/usr/bin/docker service inspect --format '{% raw %}{{.Spec.Mode.Replicated.Replicas}}{% endraw %}' "${service}")
+/usr/bin/docker service scale "${service}=0" >/dev/null
+for _ in $(seq 1 60); do
+  test -z "$(/usr/bin/docker service ps --filter desired-state=running --format '{% raw %}{{.ID}}{% endraw %}' "${service}")" && break
+  sleep 2
+done
+test -z "$(/usr/bin/docker service ps --filter desired-state=running --format '{% raw %}{{.ID}}{% endraw %}' "${service}")"
+
+/usr/bin/tar --numeric-owner --acls --xattrs -C "${source_dir}" -czf - . |
+  /usr/bin/openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:${pass_file}" -out "${archive}"
+/usr/bin/openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:${pass_file}" -in "${archive}" |
+  /usr/bin/tar -tzf - >/dev/null
+/usr/bin/find "${backup_dir}" -maxdepth 1 -type f -name 'portainer-*.tar.gz.enc' \
+  -mtime +{{ portainer_backup_retention_days }} -delete

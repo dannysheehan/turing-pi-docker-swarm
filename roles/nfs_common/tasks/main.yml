@@ -1,0 +1,84 @@
+---
+- name: Parse configured NFS mount options
+  ansible.builtin.set_fact:
+    nfs_common_configured_options: "{{ nfs_opts.split(',') }}"
+
+- name: Validate NFS mount policy
+  ansible.builtin.assert:
+    that:
+      - nfs_common_configured_options | difference(nfs_common_allowed_options) | length == 0
+      - nfs_common_rejected_options | intersect(nfs_common_configured_options) | length == 0
+      - "'hard' in nfs_common_configured_options"
+    fail_msg: >-
+      nfs_opts contains an unsafe or unknown option. Use only the repository's
+      hard, TCP, systemd-automount policy.
+
+- name: Install the NFS client
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: true
+
+- name: Inspect the NFS mount point path
+  ansible.builtin.stat:
+    path: "{{ nfs_mount }}"
+  register: nfs_common_mountpoint_path
+
+- name: Create the NFS mount point only when absent
+  ansible.builtin.file:
+    path: "{{ nfs_mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not nfs_common_mountpoint_path.stat.exists
+
+- name: Require an existing mount point to be a directory
+  ansible.builtin.assert:
+    that:
+      - not nfs_common_mountpoint_path.stat.exists or nfs_common_mountpoint_path.stat.isdir
+    fail_msg: "{{ nfs_mount }} exists but is not a directory."
+
+- name: Remove every legacy fstab entry for the NFS mount point
+  ansible.posix.mount:
+    path: "{{ nfs_mount }}"
+    state: absent_from_fstab
+
+- name: Install one canonical NFS automount entry
+  ansible.posix.mount:
+    path: "{{ nfs_mount }}"
+    src: "{{ nfs_server }}:{{ nfs_export }}"
+    fstype: nfs
+    opts: "{{ nfs_opts }}"
+    state: mounted
+
+- name: Verify the live NFS mount source and options
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/findmnt
+      - --noheadings
+      - --output
+      - SOURCE,FSTYPE,OPTIONS
+      - --target
+      - "{{ nfs_mount }}"
+  register: nfs_common_findmnt
+  changed_when: false
+  check_mode: false
+
+- name: Require the expected hard NFS mount
+  ansible.builtin.assert:
+    that:
+      - nfs_server ~ ':' ~ nfs_export in nfs_common_findmnt.stdout
+      - "'nfs' in nfs_common_findmnt.stdout"
+      - "'hard' in nfs_common_findmnt.stdout"
+      - "'soft' not in nfs_common_findmnt.stdout"
+
+- name: Create shared backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ nfs_mount }}/backups"
+    - "{{ nfs_mount }}/backups/portainer"
+    - "{{ nfs_mount }}/backups/swarm"

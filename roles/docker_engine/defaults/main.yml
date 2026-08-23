@@ -1,0 +1,8 @@
+---
+docker_engine_dietpi_software_ids:
+  - 162
+  - 134
+docker_engine_packages:
+  - docker-ce
+  - docker-ce-cli
+docker_engine_additional_daemon_config: {}

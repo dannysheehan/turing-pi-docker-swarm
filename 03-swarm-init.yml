@@ -1,0 +1,242 @@
+---
+- name: Establish and validate the Swarm administration manager
+  hosts: tpi-mgr-01
+  gather_facts: false
+  tasks:
+    - name: Assert primary manager inventory membership
+      ansible.builtin.assert:
+        that:
+          - swarm_primary_manager in groups['managers']
+
+    - name: Detect primary manager Swarm state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.LocalNodeState}}' }}"
+      register: swarm_primary_state
+      changed_when: false
+      check_mode: false
+
+    - name: Validate primary manager Swarm state
+      ansible.builtin.assert:
+        that:
+          - swarm_primary_state.stdout in ['inactive', 'active']
+        fail_msg: "Unexpected Swarm state {{ swarm_primary_state.stdout }} on {{ swarm_primary_manager }}"
+
+    - name: Initialize Swarm on inactive primary manager
+      ansible.builtin.command:
+        argv:
+          - docker
+          - swarm
+          - init
+          - --advertise-addr
+          - "{{ ansible_host }}"
+          - --data-path-addr
+          - "{{ ansible_host }}"
+      when: swarm_primary_state.stdout == 'inactive'
+      changed_when: true
+
+    - name: Read authoritative Swarm cluster ID
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.Cluster.ID}}' }}"
+      register: swarm_primary_cluster_id
+      changed_when: false
+      check_mode: false
+
+    - name: Validate authoritative Swarm cluster ID
+      ansible.builtin.assert:
+        that:
+          - swarm_primary_cluster_id.stdout == swarm_expected_cluster_id
+        fail_msg: >-
+          Primary manager belongs to Swarm {{ swarm_primary_cluster_id.stdout }},
+          expected {{ swarm_expected_cluster_id }}.
+
+    - name: Read worker join token
+      ansible.builtin.command: docker swarm join-token worker --quiet
+      register: swarm_worker_token
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read manager join token
+      ansible.builtin.command: docker swarm join-token manager --quiet
+      register: swarm_manager_token
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+- name: Reconcile every node with the authoritative Swarm
+  hosts: cluster
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Detect local Swarm state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.LocalNodeState}}' }}"
+      register: swarm_node_state
+      changed_when: false
+      check_mode: false
+
+    - name: Validate local Swarm state
+      ansible.builtin.assert:
+        that:
+          - swarm_node_state.stdout in ['inactive', 'active']
+        fail_msg: "Unexpected Swarm state {{ swarm_node_state.stdout }} on {{ inventory_hostname }}"
+
+    - name: Read active manager cluster ID
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.Cluster.ID}}' }}"
+      register: swarm_node_cluster_id
+      changed_when: false
+      check_mode: false
+      when:
+        - swarm_node_state.stdout == 'active'
+        - inventory_hostname in groups['managers']
+
+    - name: Reject foreign manager Swarm membership
+      ansible.builtin.assert:
+        that:
+          - swarm_node_cluster_id.stdout == swarm_expected_cluster_id
+        fail_msg: >-
+          {{ inventory_hostname }} belongs to foreign Swarm {{ swarm_node_cluster_id.stdout }};
+          no state will be removed automatically.
+      when:
+        - swarm_node_state.stdout == 'active'
+        - inventory_hostname in groups['managers']
+
+    - name: Join inactive manager to authoritative Swarm
+      ansible.builtin.command:
+        argv:
+          - docker
+          - swarm
+          - join
+          - --token
+          - "{{ hostvars[swarm_primary_manager].swarm_manager_token.stdout }}"
+          - --advertise-addr
+          - "{{ ansible_host }}"
+          - --data-path-addr
+          - "{{ ansible_host }}"
+          - "{{ hostvars[swarm_primary_manager].ansible_host }}:2377"
+      when:
+        - swarm_node_state.stdout == 'inactive'
+        - inventory_hostname in groups['managers']
+      changed_when: true
+      no_log: true
+
+    - name: Join inactive worker to authoritative Swarm
+      ansible.builtin.command:
+        argv:
+          - docker
+          - swarm
+          - join
+          - --token
+          - "{{ hostvars[swarm_primary_manager].swarm_worker_token.stdout }}"
+          - --advertise-addr
+          - "{{ ansible_host }}"
+          - --data-path-addr
+          - "{{ ansible_host }}"
+          - "{{ hostvars[swarm_primary_manager].ansible_host }}:2377"
+      when:
+        - swarm_node_state.stdout == 'inactive'
+        - inventory_hostname in groups['workers']
+      changed_when: true
+      no_log: true
+
+    - name: Read reconciled local Swarm node ID
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.NodeID}}' }}"
+      register: swarm_local_node_id
+      changed_when: false
+      check_mode: false
+
+    - name: Require a local cryptographic Swarm node identity
+      ansible.builtin.assert:
+        that: swarm_local_node_id.stdout | length > 0
+        fail_msg: "{{ inventory_hostname }} has no active Swarm node identity."
+
+    - name: Inspect node from Swarm manager
+      ansible.builtin.command:
+        argv:
+          - docker
+          - node
+          - inspect
+          - "{{ swarm_local_node_id.stdout }}"
+          - --format
+          - "{{ '{{.ID}}|{{.Description.Hostname}}|{{.Spec.Role}}|{{.Status.State}}|{{.Status.Addr}}|{{if .ManagerStatus}}{{.ManagerStatus.Addr}}{{end}}' }}"
+      delegate_to: "{{ swarm_primary_manager }}"
+      register: swarm_managed_node
+      changed_when: false
+      check_mode: false
+      retries: 12
+      delay: 5
+      until: swarm_managed_node.rc == 0
+
+    - name: Validate managed node identity and role
+      ansible.builtin.assert:
+        that:
+          - swarm_managed_node.stdout.split('|')[0] == swarm_local_node_id.stdout
+          - swarm_managed_node.stdout.split('|')[1] == inventory_hostname
+          - swarm_managed_node.stdout.split('|')[2] == ('manager' if inventory_hostname in groups['managers'] else 'worker')
+          - swarm_managed_node.stdout.split('|')[3] == 'ready'
+          - >-
+            (swarm_managed_node.stdout.split('|')[5].split(':')[0]
+             if inventory_hostname in groups['managers']
+             else swarm_managed_node.stdout.split('|')[4]) == ansible_host
+
+- name: Validate final Swarm topology
+  hosts: tpi-mgr-01
+  gather_facts: false
+  tasks:
+    - name: Read final Swarm node state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - node
+          - ls
+          - --format
+          - "{{ '{{.Hostname}}|{{.Status}}|{{.ManagerStatus}}|{{.EngineVersion}}' }}"
+      register: swarm_final_nodes
+      changed_when: false
+      check_mode: false
+
+    - name: Read final Swarm autolock state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.Cluster.Spec.EncryptionConfig.AutoLockManagers}}' }}"
+      register: swarm_final_autolock
+      changed_when: false
+      check_mode: false
+
+    - name: Validate final Swarm topology
+      ansible.builtin.assert:
+        that:
+          - swarm_final_nodes.stdout_lines | length == groups['cluster'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '\\|Ready\\|') | list | length == groups['cluster'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '\\|(Leader|Reachable)\\|') | list | length == groups['managers'] | length
+          - >-
+            swarm_final_nodes.stdout_lines |
+            select('search', '\\|' ~ (docker_engine_version | regex_escape) ~ '$') |
+            list | length == groups['cluster'] | length
+          - swarm_final_autolock.stdout | trim == (swarm_autolock | bool | ternary('true', 'false'))

@@ -1,0 +1,317 @@
+---
+- name: Read DietPi Docker software states
+  ansible.builtin.command:
+    argv:
+      - /boot/dietpi/dietpi-software
+      - list
+      - --machine-readable
+      - "{{ item | string }}"
+  loop: "{{ docker_engine_dietpi_software_ids }}"
+  register: docker_engine_software_states
+  changed_when: false
+  check_mode: false
+
+- name: Calculate DietPi Docker integration state
+  ansible.builtin.set_fact:
+    docker_engine_dietpi_install_required: >-
+      {{ docker_engine_software_states.results
+         | map(attribute='stdout')
+         | select('search', '\\|2\\|')
+         | list | length != docker_engine_dietpi_software_ids | length }}
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Calculate target Docker package version
+  ansible.builtin.set_fact:
+    docker_engine_package_version: >-
+      5:{{ docker_engine_version }}-1~debian.{{ ansible_facts.distribution_major_version }}~{{ ansible_facts.distribution_release }}
+    docker_engine_installed_version: >-
+      {{ (ansible_facts.packages['docker-ce'] | default([{'version': ''}]) | first).version }}
+
+- name: Confirm target Docker version is available from DietPi repository
+  ansible.builtin.command:
+    argv:
+      - apt-cache
+      - madison
+      - docker-ce
+  register: docker_engine_available_versions
+  changed_when: false
+  check_mode: false
+  when: not docker_engine_dietpi_install_required
+
+- name: Assert target Docker version is available
+  ansible.builtin.assert:
+    that:
+      - docker_engine_package_version in docker_engine_available_versions.stdout
+    fail_msg: >-
+      Docker {{ docker_engine_package_version }} is not available for
+      {{ ansible_facts.distribution_release }} on {{ inventory_hostname }}.
+  when: not docker_engine_dietpi_install_required
+
+- name: Inspect local Swarm state
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{{ '{{.Swarm.LocalNodeState}}' }}"
+  register: docker_engine_swarm_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Inspect active Docker data root
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{{ '{{.DockerRootDir}}' }}"
+  register: docker_engine_current_root
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read current Docker daemon configuration safely
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - >-
+        import json, pathlib;
+        p = pathlib.Path('/etc/docker/daemon.json');
+        data = json.loads(p.read_text()) if p.exists() else {};
+        print(json.dumps(data))
+  register: docker_engine_daemon_config
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Calculate current and desired Docker daemon configuration
+  ansible.builtin.set_fact:
+    docker_engine_current_daemon_config: >-
+      {{ (docker_engine_daemon_config.stdout | from_json)
+         if docker_engine_daemon_config.rc == 0 else {} }}
+    docker_engine_desired_daemon_config: >-
+      {{ docker_engine_additional_daemon_config | combine({
+           'data-root': docker_data_root,
+           'log-driver': 'journald',
+           'log-level': 'warn',
+           'debug': false
+         }) }}
+
+- name: Calculate whether Docker reconciliation can restart the daemon
+  ansible.builtin.set_fact:
+    docker_engine_restart_required: >-
+      {{ docker_engine_dietpi_install_required
+         or docker_engine_installed_version != docker_engine_package_version
+         or docker_engine_daemon_config.rc != 0
+         or docker_engine_current_daemon_config != docker_engine_desired_daemon_config }}
+
+- name: Refuse an implicit Docker data-root migration
+  ansible.builtin.assert:
+    that:
+      - docker_engine_current_root.stdout | length == 0 or docker_engine_current_root.stdout == docker_data_root
+    fail_msg: >-
+      Docker currently uses {{ docker_engine_current_root.stdout }} on {{ inventory_hostname }};
+      refusing to switch to {{ docker_data_root }} without an explicit data migration.
+
+- name: Inspect current Swarm availability
+  ansible.builtin.command:
+    argv:
+      - docker
+      - node
+      - inspect
+      - "{{ inventory_hostname }}"
+      - --format
+      - "{{ '{{.Spec.Availability}}' }}"
+  delegate_to: "{{ swarm_primary_manager }}"
+  register: docker_engine_original_availability
+  changed_when: false
+  check_mode: false
+  when:
+    - docker_engine_restart_required
+    - docker_engine_swarm_state.stdout == 'active'
+
+- name: Inspect healthy manager count before manager maintenance
+  ansible.builtin.command:
+    argv:
+      - docker
+      - node
+      - ls
+      - --filter
+      - role=manager
+      - --format
+      - "{{ '{{.Status}}|{{.ManagerStatus}}' }}"
+  delegate_to: "{{ swarm_primary_manager }}"
+  register: docker_engine_manager_states
+  changed_when: false
+  check_mode: false
+  when:
+    - docker_engine_restart_required
+    - inventory_hostname in groups['managers']
+    - docker_engine_swarm_state.stdout == 'active'
+
+- name: Require three healthy managers before restarting one
+  ansible.builtin.assert:
+    that:
+      - docker_engine_manager_states.stdout_lines | select('match', '^Ready\\|(Leader|Reachable)$') | list | length == 3
+    fail_msg: Refusing Docker maintenance because all three Swarm managers are not healthy.
+  when:
+    - docker_engine_restart_required
+    - inventory_hostname in groups['managers']
+    - docker_engine_swarm_state.stdout == 'active'
+
+- name: Reconcile Docker while preserving original Swarm availability
+  block:
+    - name: Drain node before Docker changes
+      ansible.builtin.command:
+        argv:
+          - docker
+          - node
+          - update
+          - --availability
+          - drain
+          - "{{ inventory_hostname }}"
+      delegate_to: "{{ swarm_primary_manager }}"
+      when:
+        - docker_engine_restart_required
+        - docker_engine_swarm_state.stdout == 'active'
+        - docker_engine_original_availability.stdout != 'drain'
+      changed_when: true
+
+    - name: Unhold Docker engine packages for controlled reconciliation
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: install
+      loop: "{{ docker_engine_packages }}"
+      when: docker_engine_restart_required
+
+    - name: Install Docker through DietPi software catalogue
+      ansible.builtin.command:
+        argv: "{{ ['/boot/dietpi/dietpi-software', 'install'] + (docker_engine_dietpi_software_ids | map('string') | list) }}"
+      when: docker_engine_dietpi_install_required
+      changed_when: true
+
+    - name: Refresh Docker versions available from DietPi repository
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - madison
+          - docker-ce
+      register: docker_engine_reconciled_available_versions
+      changed_when: false
+      check_mode: false
+
+    - name: Validate target Docker version after DietPi integration
+      ansible.builtin.assert:
+        that:
+          - docker_engine_package_version in docker_engine_reconciled_available_versions.stdout
+
+    - name: Reconcile exact Docker engine package versions
+      ansible.builtin.apt:
+        name:
+          - "docker-ce={{ docker_engine_package_version }}"
+          - "docker-ce-cli={{ docker_engine_package_version }}"
+        state: present
+        update_cache: true
+        allow_downgrade: true
+      when: >-
+        docker_engine_dietpi_install_required
+        or docker_engine_installed_version != docker_engine_package_version
+      notify: Restart Docker engine
+
+    - name: Reconcile DietPi-compatible Docker daemon configuration
+      ansible.builtin.template:
+        src: daemon.json.j2
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/bin/dockerd --validate --config-file=%s
+      notify: Restart Docker engine
+      when: docker_engine_restart_required
+
+    - name: Apply pending Docker restart handler
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for Docker daemon
+      ansible.builtin.command: docker info
+      register: docker_engine_ready
+      changed_when: false
+      check_mode: false
+      retries: 30
+      delay: 5
+      until: docker_engine_ready.rc == 0
+
+    - name: Verify Docker server version
+      ansible.builtin.command:
+        argv:
+          - docker
+          - version
+          - --format
+          - "{{ '{{.Server.Version}}' }}"
+      register: docker_engine_server_version
+      changed_when: false
+      check_mode: false
+
+    - name: Verify active Docker data root
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.DockerRootDir}}' }}"
+      register: docker_engine_verified_root
+      changed_when: false
+      check_mode: false
+
+    - name: Inspect DietPi Docker systemd service type
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, show, docker.service, --property=Type, --value]
+      register: docker_engine_service_type
+      changed_when: false
+      check_mode: false
+
+    - name: Inspect DietPi iptables backend
+      ansible.builtin.command:
+        argv: [/usr/bin/readlink, -f, /usr/sbin/iptables]
+      register: docker_engine_iptables_backend
+      changed_when: false
+      check_mode: false
+
+    - name: Verify DietPi Docker invariants
+      ansible.builtin.assert:
+        that:
+          - docker_engine_server_version.stdout == docker_engine_version
+          - docker_engine_verified_root.stdout == docker_data_root
+          - docker_engine_service_type.stdout | trim == 'simple'
+          - "'nft' in docker_engine_iptables_backend.stdout"
+
+  always:
+    - name: Hold Docker engine packages outside rolling maintenance
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: "{{ docker_engine_packages }}"
+      when:
+        - docker_engine_ready is defined
+        - docker_engine_ready.rc == 0
+
+    - name: Restore original Swarm availability
+      ansible.builtin.command:
+        argv:
+          - docker
+          - node
+          - update
+          - --availability
+          - "{{ docker_engine_original_availability.stdout }}"
+          - "{{ inventory_hostname }}"
+      delegate_to: "{{ swarm_primary_manager }}"
+      when:
+        - docker_engine_restart_required
+        - docker_engine_swarm_state.stdout == 'active'
+        - docker_engine_original_availability.stdout != 'drain'
+      changed_when: true

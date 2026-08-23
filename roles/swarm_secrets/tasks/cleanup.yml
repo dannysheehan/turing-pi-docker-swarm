@@ -1,0 +1,17 @@
+---
+- name: Validate Swarm secret cleanup inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == swarm_primary_manager
+      - swarm_secrets_definitions | length > 0
+      - swarm_secrets_resolved_names is defined
+    fail_msg: >-
+      Cleanup requires the synchronization result on the administrative
+      manager. Run the main swarm_secrets tasks first.
+
+- name: Remove superseded managed Swarm secrets
+  ansible.builtin.include_tasks: cleanup_definition.yml
+  loop: "{{ swarm_secrets_definitions }}"
+  loop_control:
+    loop_var: swarm_secrets_definition
+    label: "{{ swarm_secrets_definition.name }}"

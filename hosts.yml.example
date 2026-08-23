@@ -1,0 +1,28 @@
+---
+managers:
+  hosts:
+    tpi-mgr-01:
+      ansible_host: 192.0.2.51
+      keepalived_priority: 100
+    tpi-mgr-02:
+      ansible_host: 192.0.2.52
+      keepalived_priority: 90
+    tpi-mgr-03:
+      ansible_host: 192.0.2.53
+      keepalived_priority: 80
+
+workers:
+  hosts:
+    tpi-wrk-01:
+      ansible_host: 192.0.2.54
+    tpi-wrk-02:
+      ansible_host: 192.0.2.55
+    tpi-wrk-03:
+      ansible_host: 192.0.2.56
+    tpi-wrk-04:
+      ansible_host: 192.0.2.57
+
+cluster:
+  children:
+    managers:
+    workers:

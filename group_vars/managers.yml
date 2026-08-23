@@ -1,0 +1,2 @@
+swarm_manager: true
+keepalived_priority: 90

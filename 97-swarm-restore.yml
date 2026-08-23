@@ -1,0 +1,160 @@
+---
+- name: Validate a requested encrypted Swarm restoration
+  hosts: tpi-mgr-01
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    swarm_restore_backup_dir: "{{ nfs_mount }}/backups/swarm"
+    swarm_restore_pass_file: /root/.config/swarm-backup-passphrase
+  tasks:
+    - name: Require exact restoration confirmation and inputs
+      ansible.builtin.assert:
+        that:
+          - swarm_restore_confirm | default('') == 'RESTORE-' ~ swarm_expected_cluster_id
+          - swarm_restore_archive | default('') | length > 0
+          - backup_passphrase | length >= 20
+        fail_msg: >-
+          Supply a validated archive, vaulted passphrase, and
+          -e swarm_restore_confirm=RESTORE-{{ swarm_expected_cluster_id }}.
+      no_log: true
+
+    - name: Resolve the requested restoration archive
+      ansible.builtin.command:
+        argv: [/usr/bin/readlink, -f, "{{ swarm_restore_archive }}"]
+      register: swarm_restore_resolved_archive
+      changed_when: false
+
+    - name: Restrict restoration to the configured NFS backup directory
+      ansible.builtin.assert:
+        that:
+          - swarm_restore_resolved_archive.stdout is match('^' ~ (swarm_restore_backup_dir | regex_escape) ~ '/swarm-.*\\.tar\\.gz\\.enc$')
+
+    - name: Store the restoration passphrase
+      ansible.builtin.copy:
+        content: "{{ backup_passphrase }}\n"
+        dest: "{{ swarm_restore_pass_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate the encrypted archive before stopping managers
+      ansible.builtin.shell: >-
+        set -o pipefail && openssl enc -d -aes-256-cbc -pbkdf2
+        -pass file:{{ swarm_restore_pass_file | quote }}
+        -in {{ swarm_restore_resolved_archive.stdout | quote }} |
+        tar -tzf - | grep -q '^swarm/'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Stop Docker on all managers for controlled Raft restoration
+  hosts: managers
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Stop Docker on the manager
+      ansible.builtin.systemd_service:
+        name: docker.service
+        state: stopped
+
+- name: Restore Swarm state on the administrative manager
+  hosts: tpi-mgr-01
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    swarm_restore_pass_file: /root/.config/swarm-backup-passphrase
+    swarm_restore_rollback_dir: >-
+      {{ docker_data_root }}/swarm.pre-restore-{{ ansible_facts.date_time.iso8601_basic_short }}
+  tasks:
+    - name: Restore encrypted Raft state with local rollback
+      block:
+        - name: Preserve the current Swarm directory for rollback
+          ansible.builtin.command:
+            argv: [/usr/bin/mv, "{{ docker_data_root }}/swarm", "{{ swarm_restore_rollback_dir }}"]
+          changed_when: true
+
+        - name: Extract the encrypted Swarm state
+          ansible.builtin.shell: >-
+            set -o pipefail && openssl enc -d -aes-256-cbc -pbkdf2
+            -pass file:{{ swarm_restore_pass_file | quote }}
+            -in {{ hostvars['tpi-mgr-01'].swarm_restore_resolved_archive.stdout | quote }} |
+            tar --numeric-owner --acls --xattrs -xzf - -C {{ docker_data_root | quote }}
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Start Docker with restored Swarm state
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: started
+
+        - name: Force a new quorum from the restored manager
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/docker
+              - swarm
+              - init
+              - --force-new-cluster
+              - --advertise-addr
+              - "{{ ansible_host }}"
+          changed_when: true
+
+        - name: Verify the restored Swarm identity
+          ansible.builtin.command:
+            argv: [/usr/bin/docker, info, --format, "{{ '{{.Swarm.Cluster.ID}}' }}"]
+          register: swarm_restore_cluster_id
+          changed_when: false
+          failed_when: swarm_restore_cluster_id.stdout | trim != swarm_expected_cluster_id
+      rescue:
+        - name: Stop Docker after failed restoration
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: stopped
+
+        - name: Preserve the failed restored state
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/mv
+              - "{{ docker_data_root }}/swarm"
+              - "{{ docker_data_root }}/swarm.failed-restore-{{ ansible_facts.date_time.iso8601_basic_short }}"
+          changed_when: true
+
+        - name: Put the pre-restore Swarm state back
+          ansible.builtin.command:
+            argv: [/usr/bin/mv, "{{ swarm_restore_rollback_dir }}", "{{ docker_data_root }}/swarm"]
+          changed_when: true
+
+        - name: Restart Docker with pre-restore state
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: started
+
+        - name: Report restoration rollback
+          ansible.builtin.fail:
+            msg: Restoration failed and the pre-restore state was put back on tpi-mgr-01.
+
+- name: Start the remaining managers after restoration
+  hosts: managers:!tpi-mgr-01
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Start Docker on the manager
+      ansible.builtin.systemd_service:
+        name: docker.service
+        state: started
+
+- name: Validate restored manager quorum
+  hosts: tpi-mgr-01
+  gather_facts: false
+  tasks:
+    - name: Wait for all three restored managers
+      ansible.builtin.shell: >-
+        set -o pipefail && test "$(docker node ls --filter role=manager
+        --format '{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.ManagerStatus{{ '}}' }}' |
+        grep -Ec '^Ready .*(Reachable|Leader)')" -eq 3
+      register: swarm_restore_quorum
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: swarm_restore_quorum.rc == 0

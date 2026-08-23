@@ -1,0 +1,200 @@
+---
+- name: Install the safe DietPi update wrapper
+  ansible.builtin.template:
+    src: dietpi-update-safe.sh.j2
+    dest: /usr/local/sbin/ansible-dietpi-update
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Verify the maintenance backup mount
+  ansible.builtin.command:
+    argv: [/usr/bin/findmnt, --mountpoint, "{{ nfs_mount }}"]
+  changed_when: false
+  check_mode: false
+
+- name: Find a validated Swarm backup prerequisite
+  ansible.builtin.find:
+    paths: "{{ nfs_mount }}/backups/swarm"
+    patterns: "swarm-*.tar.gz.enc.metadata.yml"
+    file_type: file
+    recurse: false
+  register: os_maintenance_swarm_backups
+
+- name: Require a Swarm backup before maintenance
+  ansible.builtin.assert:
+    that: os_maintenance_swarm_backups.matched | int > 0
+    fail_msg: Run and validate 98-swarm-backup.yml before OS maintenance.
+
+- name: Find a validated Portainer backup prerequisite
+  ansible.builtin.find:
+    paths: "{{ nfs_mount }}/backups/portainer"
+    patterns: "portainer-*.tar.gz.enc"
+    file_type: file
+    recurse: false
+  register: os_maintenance_portainer_backups
+  when: portainer_enabled | bool
+
+- name: Require a Portainer backup before maintenance
+  ansible.builtin.assert:
+    that: os_maintenance_portainer_backups.matched | int > 0
+    fail_msg: Run and validate the Portainer backup before OS maintenance.
+  when: portainer_enabled | bool
+
+- name: Read original Swarm availability
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - node
+      - inspect
+      - "{{ inventory_hostname }}"
+      - --format
+      - "{{ '{{.Spec.Availability}}' }}"
+  delegate_to: "{{ swarm_primary_manager }}"
+  register: os_maintenance_original_availability_result
+  changed_when: false
+  check_mode: false
+
+- name: Save original Swarm availability
+  ansible.builtin.set_fact:
+    os_maintenance_original_availability: "{{ os_maintenance_original_availability_result.stdout | trim }}"
+
+- name: Require all three healthy managers before manager maintenance
+  ansible.builtin.shell: >-
+    set -o pipefail && test "$(docker node ls --filter role=manager
+    --format '{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.ManagerStatus{{ '}}' }}' |
+    grep -Ec '^Ready .*(Reachable|Leader)')" -eq 3
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ swarm_primary_manager }}"
+  changed_when: false
+  check_mode: false
+  when: inventory_hostname in groups['managers']
+
+- name: Perform drained DietPi maintenance
+  block:
+    - name: Drain the node
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, node, update, --availability, drain, "{{ inventory_hostname }}"]
+      delegate_to: "{{ swarm_primary_manager }}"
+      changed_when: os_maintenance_original_availability != 'drain'
+
+    - name: Wait for running workloads to leave the drained node
+      ansible.builtin.shell: >-
+        test -z "$(docker node ps --filter desired-state=running
+        --format '{{ '{{' }}.ID{{ '}}' }}' {{ inventory_hostname }})"
+      delegate_to: "{{ swarm_primary_manager }}"
+      register: os_maintenance_drained
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: os_maintenance_drained.rc == 0
+      when: not ansible_check_mode
+
+    - name: Hold Docker engine packages during general maintenance
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - docker-ce
+        - docker-ce-cli
+
+    - name: Run the DietPi updater to its real exit status
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/ansible-dietpi-update
+          - "{{ os_maintenance_update_timeout_seconds | string }}"
+      register: os_maintenance_dietpi_update
+      changed_when: "'UPDATE_APPLIED=1' in os_maintenance_dietpi_update.stdout"
+      timeout: "{{ os_maintenance_update_timeout_seconds | int + 120 }}"
+
+    - name: Refresh APT metadata and apply distribution patches
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        autoremove: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      when: os_maintenance_patches | bool
+
+    - name: Restart DietPi-managed services after package maintenance
+      ansible.builtin.command:
+        argv: [/boot/dietpi/dietpi-services, restart]
+      changed_when: true
+
+    - name: Check whether a reboot is required
+      ansible.builtin.shell: >-
+        test -e /var/run/reboot-required ||
+        test ! -d /lib/modules/$(uname -r)
+      register: os_maintenance_reboot_required
+      changed_when: false
+      failed_when: os_maintenance_reboot_required.rc not in [0, 1]
+      check_mode: false
+
+    - name: Reboot the DietPi node when required
+      ansible.builtin.reboot:
+        reboot_command: /bin/systemctl reboot --force
+        reboot_timeout: 600
+        connect_timeout: 30
+        post_reboot_delay: 15
+      when:
+        - os_maintenance_reboot | bool
+        - os_maintenance_reboot_required.rc == 0
+
+    - name: Require completed DietPi postboot state
+      ansible.builtin.command:
+        argv:
+          - /bin/bash
+          - -c
+          - test "$(cat /boot/dietpi/.install_stage)" = 2 && ! systemctl is-failed --quiet dietpi-postboot.service
+      changed_when: false
+      check_mode: false
+
+    - name: Wait for Docker to be ready
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, info]
+      register: os_maintenance_docker_ready
+      changed_when: false
+      check_mode: false
+      retries: 30
+      delay: 4
+      until: os_maintenance_docker_ready.rc == 0
+
+    - name: Require synchronized system time
+      ansible.builtin.command:
+        argv: [/usr/bin/timedatectl, show, --property=NTPSynchronized, --value]
+      register: os_maintenance_time_sync
+      changed_when: false
+      failed_when: os_maintenance_time_sync.stdout | trim != 'yes'
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Wait for the node to be ready in Swarm
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - node
+          - inspect
+          - "{{ inventory_hostname }}"
+          - --format
+          - "{{ '{{.Status.State}}' }}"
+      delegate_to: "{{ swarm_primary_manager }}"
+      register: os_maintenance_swarm_ready
+      changed_when: false
+      check_mode: false
+      retries: 30
+      delay: 4
+      until: os_maintenance_swarm_ready.stdout | trim == 'ready'
+  always:
+    - name: Restore original Swarm availability
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - node
+          - update
+          - --availability
+          - "{{ os_maintenance_original_availability }}"
+          - "{{ inventory_hostname }}"
+      delegate_to: "{{ swarm_primary_manager }}"
+      changed_when: true
+      when: os_maintenance_original_availability is defined

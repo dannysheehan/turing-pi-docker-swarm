@@ -1,0 +1,31 @@
+---
+- name: Restart Portainer with a one-at-a-time rolling service update
+  hosts: tpi-mgr-01
+  gather_facts: false
+  tasks:
+    - name: Require Portainer to be enabled
+      ansible.builtin.assert:
+        that: portainer_enabled | bool
+
+    - name: Force a rolling restart of the Portainer server
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, service, update, --force, portainer_portainer]
+      changed_when: true
+
+    - name: Wait for the restarted Portainer API
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ portainer_https_port }}/api/system/status"
+        validate_certs: false
+        status_code: 200
+      register: portainer_restart_api
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: portainer_restart_api.status | default(0) == 200
+
+    - name: Explain the fresh-install setup window
+      ansible.builtin.debug:
+        msg: >-
+          Portainer is ready. For a fresh installation, run
+          `make portainer-setup-token` locally and complete setup within five
+          minutes. The command prints the ephemeral token without storing it.

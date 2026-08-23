@@ -1,0 +1,25 @@
+---
+- name: Reconcile shared NFS storage
+  hosts: cluster
+  tags: [nfs]
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: nfs_common
+
+- name: Reconcile manager virtual IP
+  hosts: managers
+  tags: [keepalived]
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: keepalived
+
+- name: Reconcile Portainer Swarm services
+  hosts: tpi-mgr-01
+  tags: [portainer]
+  gather_facts: true
+  roles:
+    - role: portainer

@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+IPT=/usr/sbin/iptables
+IP6T=/usr/sbin/ip6tables
+
+${IPT} -N ANSIBLE-INPUT 2>/dev/null || ${IPT} -F ANSIBLE-INPUT
+${IPT} -C INPUT -j ANSIBLE-INPUT 2>/dev/null || ${IPT} -I INPUT 1 -j ANSIBLE-INPUT
+${IPT} -A ANSIBLE-INPUT -i lo -j ACCEPT
+${IPT} -A ANSIBLE-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+${IPT} -A ANSIBLE-INPUT -p icmp -j ACCEPT
+${IPT} -A ANSIBLE-INPUT -p tcp -s {{ admin_cidr }} --dport 22 -j ACCEPT
+{% for peer in groups['cluster'] %}
+{% if peer != inventory_hostname %}
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p tcp --dport 7946 -j ACCEPT
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 7946 -j ACCEPT
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 4789 -j ACCEPT
+{% endif %}
+{% endfor %}
+{% if inventory_hostname in groups['managers'] %}
+{% for peer in groups['cluster'] %}
+{% if peer != inventory_hostname %}
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p tcp --dport 2377 -j ACCEPT
+{% endif %}
+{% endfor %}
+{% for peer in groups['managers'] %}
+{% if peer != inventory_hostname %}
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p 112 -j ACCEPT
+{% endif %}
+{% endfor %}
+{% endif %}
+${IPT} -A ANSIBLE-INPUT -j DROP
+
+${IPT} -N ANSIBLE-PORTAINER 2>/dev/null || ${IPT} -F ANSIBLE-PORTAINER
+${IPT} -C DOCKER-USER -j ANSIBLE-PORTAINER 2>/dev/null || ${IPT} -I DOCKER-USER 1 -j ANSIBLE-PORTAINER
+${IPT} -A ANSIBLE-PORTAINER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+${IPT} -A ANSIBLE-PORTAINER -p tcp -s {{ admin_cidr }} --dport {{ portainer_https_port }} -j ACCEPT
+${IPT} -A ANSIBLE-PORTAINER -p tcp --dport {{ portainer_https_port }} -j DROP
+${IPT} -A ANSIBLE-PORTAINER -j RETURN
+
+${IP6T} -N ANSIBLE-INPUT 2>/dev/null || ${IP6T} -F ANSIBLE-INPUT
+${IP6T} -C INPUT -j ANSIBLE-INPUT 2>/dev/null || ${IP6T} -I INPUT 1 -j ANSIBLE-INPUT
+${IP6T} -A ANSIBLE-INPUT -i lo -j ACCEPT
+${IP6T} -A ANSIBLE-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+${IP6T} -A ANSIBLE-INPUT -p ipv6-icmp -j ACCEPT
+${IP6T} -A ANSIBLE-INPUT -j DROP

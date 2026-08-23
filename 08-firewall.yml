@@ -1,0 +1,19 @@
+---
+- name: Apply the cluster firewall one node at a time
+  hosts: cluster
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require explicit firewall rollout confirmation
+      ansible.builtin.assert:
+        that: firewall_confirm | default(false) | bool
+        fail_msg: >-
+          Run with -e firewall_confirm=true from a host inside admin_cidr after
+          confirming console access and the inventory addresses.
+  roles:
+    - role: swarm_firewall
+  post_tasks:
+    - name: Verify the SSH connection after firewall application
+      ansible.builtin.wait_for_connection:
+        timeout: 30

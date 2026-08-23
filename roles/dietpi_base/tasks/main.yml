@@ -1,0 +1,184 @@
+---
+- name: Reconcile persistent hostname
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ inventory_hostname }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read live hostname
+  ansible.builtin.command:
+    argv: [/bin/hostname]
+  register: dietpi_base_live_hostname
+  changed_when: false
+  check_mode: false
+
+- name: Reconcile live hostname without DBus
+  ansible.builtin.command:
+    argv: [/bin/hostname, "{{ inventory_hostname }}"]
+  changed_when: true
+  when: dietpi_base_live_hostname.stdout | trim != inventory_hostname
+
+- name: Reconcile timezone name
+  ansible.builtin.copy:
+    dest: /etc/timezone
+    content: "{{ timezone }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reconcile timezone symlink
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ timezone }}"
+    dest: /etc/localtime
+    state: link
+    owner: root
+    group: root
+    force: true
+
+- name: Read existing host mappings
+  ansible.builtin.slurp:
+    src: /etc/hosts
+  register: dietpi_base_hosts_file
+
+- name: Remove a previous managed block from the host mapping source
+  ansible.builtin.set_fact:
+    dietpi_base_hosts_unmanaged: >-
+      {{
+        dietpi_base_hosts_file.content | b64decode |
+        regex_replace(
+          '(?ms)^# BEGIN ANSIBLE MANAGED CLUSTER HOSTS$.*?^# END ANSIBLE MANAGED CLUSTER HOSTS$\\n?',
+          ''
+        )
+      }}
+
+- name: Build the legacy cluster mapping expression
+  ansible.builtin.set_fact:
+    dietpi_base_legacy_hosts_pattern: >-
+      (?m)^(?:{%- for cluster_host in groups['cluster'] -%}
+      {{ hostvars[cluster_host].ansible_host | regex_escape }} {{ cluster_host | regex_escape }}{%- if not loop.last -%}|{%- endif -%}
+      {%- endfor -%})$\n?
+
+- name: Remove legacy cluster mappings from the host mapping source
+  ansible.builtin.set_fact:
+    dietpi_base_hosts_unmanaged: >-
+      {{
+        dietpi_base_hosts_unmanaged |
+        regex_replace(dietpi_base_legacy_hosts_pattern, '')
+      }}
+
+- name: Reconcile one cluster host mapping block
+  ansible.builtin.copy:
+    dest: /etc/hosts
+    content: |
+      {{ dietpi_base_hosts_unmanaged | regex_replace('\n*$', '') }}
+      # BEGIN ANSIBLE MANAGED CLUSTER HOSTS
+      {% for cluster_host in groups['cluster'] %}
+      {{ hostvars[cluster_host].ansible_host }} {{ cluster_host }}
+      {% endfor %}
+      # END ANSIBLE MANAGED CLUSTER HOSTS
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reconcile DietPi NTP mirror
+  ansible.builtin.lineinfile:
+    path: /boot/dietpi.txt
+    regexp: '^CONFIG_NTP_MIRROR='
+    line: "CONFIG_NTP_MIRROR={{ dietpi_ntp_mirror }}"
+    mode: "0644"
+  register: dietpi_base_ntp_mirror
+
+- name: Read configured DietPi NTP mode
+  ansible.builtin.shell: |
+    set -o pipefail
+    sed -n 's/^CONFIG_NTP_MODE=//p' /boot/dietpi.txt | head -1
+  args:
+    executable: /bin/bash
+  register: dietpi_base_ntp_mode
+  changed_when: false
+  check_mode: false
+
+- name: Calculate whether DietPi time configuration must change
+  ansible.builtin.set_fact:
+    dietpi_base_ntp_change_required: >-
+      {{ dietpi_base_ntp_mode.stdout | trim != dietpi_ntp_mode | string
+         or dietpi_base_ntp_mirror.changed }}
+
+- name: Apply DietPi daemon-and-drift time synchronization
+  ansible.builtin.command:
+    argv:
+      - /boot/dietpi/func/dietpi-set_software
+      - ntpd-mode
+      - "{{ dietpi_ntp_mode | string }}"
+  when: dietpi_base_ntp_change_required
+  changed_when: true
+
+- name: Enable DietPi APT update reporting without automatic upgrades
+  ansible.builtin.lineinfile:
+    path: /boot/dietpi.txt
+    regexp: '^CONFIG_CHECK_APT_UPDATES='
+    line: CONFIG_CHECK_APT_UPDATES=1
+    mode: "0644"
+
+- name: Verify DietPi time synchronization service
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd.service
+    state: started
+  register: dietpi_base_timesync_service
+  retries: 12
+  delay: 5
+  until: dietpi_base_timesync_service.status.ActiveState == 'active'
+  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+
+- name: Verify current clock synchronization
+  ansible.builtin.command: timedatectl show --property=NTPSynchronized --value
+  register: dietpi_base_clock_sync
+  changed_when: false
+  check_mode: false
+  retries: 12
+  delay: 5
+  until: dietpi_base_clock_sync.stdout | trim == 'yes'
+  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+
+- name: Inspect the systemd synchronization timestamp
+  ansible.builtin.stat:
+    path: /run/systemd/timesync/synchronized
+  register: dietpi_base_sync_timestamp
+  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+
+- name: Require a recent successful clock synchronization
+  ansible.builtin.assert:
+    that:
+      - dietpi_base_sync_timestamp.stat.exists
+      - ansible_facts.date_time.epoch | int - dietpi_base_sync_timestamp.stat.mtime | int < 86400
+    fail_msg: systemd-timesyncd has no successful synchronization marker from the last day.
+  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+
+- name: Read the live DietPi RAMlog configuration
+  ansible.builtin.slurp:
+    src: /boot/dietpi.txt
+  register: dietpi_base_configuration
+
+- name: Inspect DietPi RAMlog
+  ansible.builtin.command: findmnt --noheadings --output FSTYPE,OPTIONS /var/log
+  register: dietpi_base_ramlog
+  changed_when: false
+  check_mode: false
+
+- name: Inspect DietPi RAMlog service
+  ansible.builtin.systemd_service:
+    name: dietpi-ramlog.service
+  register: dietpi_base_ramlog_service
+  changed_when: false
+
+- name: Verify DietPi RAMlog remains active and bounded
+  ansible.builtin.assert:
+    that:
+      - dietpi_base_ramlog.stdout is search('tmpfs')
+      - dietpi_base_ramlog.stdout is search('size=' ~ (dietpi_ramlog_size_mb | int * 1024) ~ 'k')
+      - dietpi_base_ramlog_service.status.ActiveState == 'active'
+      - >-
+        dietpi_base_configuration.content | b64decode is
+        search('(?m)^AUTO_SETUP_RAMLOG_MAXSIZE=' ~ dietpi_ramlog_size_mb ~ '$')

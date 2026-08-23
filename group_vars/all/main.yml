@@ -1,0 +1,53 @@
+---
+ansible_user: dietpi
+ansible_become: true
+
+dietpi_min_version: "10.6"
+dietpi_ntp_mode: 4
+dietpi_ntp_mirror: default
+dietpi_ramlog_size_mb: 50
+dietpi_min_root_free_mb: 512
+
+swarm_vip_prefix: 24
+swarm_primary_manager: tpi-mgr-01
+swarm_autolock: false
+
+docker_dietpi_software_ids:
+  - 162
+  - 134
+docker_data_root: /mnt/dietpi_userdata/docker-data
+docker_engine_version: 29.7.2
+docker_force_uniform: true
+
+# Portainer (deployed by 04-services / portainer role)
+portainer_enabled: true
+portainer_version: 2.39.6
+portainer_primary_manager: tpi-mgr-01
+portainer_data_dir: /mnt/dietpi_userdata/portainer-data
+portainer_https_port: 9443
+portainer_database_secret_name: portainer_database_key  # pragma: allowlist secret
+portainer_backup_passphrase: >-
+  {{
+    lookup('community.general.onepassword', portainer_backup_secret_reference)
+    | b64encode | b64decode
+  }}
+# One-time acknowledgement for encrypting an existing plaintext database.
+portainer_database_encryption_confirm: false
+portainer_admin_username: admin
+portainer_admin_password: "{{ vault_portainer_admin_password | default('') }}"
+# true only on a fresh install (then run 06-portainer-setup.yml)
+portainer_auto_setup: false
+
+# Shared NFS storage (mounted once per manager, apps bind subdirs).
+nfs_mount: /srv/nfs
+nfs_opts: "vers=3,hard,proto=tcp,timeo=600,retrans=2,_netdev,nofail,x-systemd.automount"
+portainer_backup_retention_days: 14
+portainer_backup_hour: 3
+portainer_backup_minute: 30
+backup_passphrase: "{{ vault_backup_passphrase | default('') }}"
+
+os_maintenance_patches: true
+os_maintenance_reboot: true
+keepalived_interface: eth0
+keepalived_virtual_router_id: 51
+keepalived_auth_pass: "{{ vault_keepalived_auth_pass | default('') }}"

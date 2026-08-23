@@ -1,0 +1,129 @@
+---
+- name: Create an operator-requested encrypted Swarm backup
+  hosts: tpi-mgr-01
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    swarm_backup_dir: "{{ nfs_mount }}/backups/swarm"
+    swarm_backup_stamp: "{{ ansible_facts.date_time.iso8601_basic_short }}"
+    swarm_backup_file: "{{ swarm_backup_dir }}/swarm-{{ swarm_backup_stamp }}.tar.gz.enc"
+    swarm_backup_pass_file: /root/.config/swarm-backup-passphrase
+  pre_tasks:
+    - name: Require explicit backup confirmation and encryption secret
+      ansible.builtin.assert:
+        that:
+          - swarm_backup_confirm | default(false) | bool
+          - backup_passphrase | length >= 20
+        fail_msg: Supply a vaulted passphrase and -e swarm_backup_confirm=true.
+      no_log: true
+
+    - name: Require all three managers to be healthy
+      ansible.builtin.shell: >-
+        set -o pipefail && test "$(docker node ls --filter role=manager
+        --format '{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.ManagerStatus{{ '}}' }}' |
+        grep -Ec '^Ready .*(Reachable|Leader)')" -eq 3
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Verify the backup NFS mount
+      ansible.builtin.command:
+        argv: [/usr/bin/findmnt, --mountpoint, "{{ nfs_mount }}"]
+      changed_when: false
+
+    - name: Create the Swarm backup directory
+      ansible.builtin.file:
+        path: "{{ swarm_backup_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Store the Swarm backup passphrase
+      ansible.builtin.copy:
+        content: "{{ backup_passphrase }}\n"
+        dest: "{{ swarm_backup_pass_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+  tasks:
+    - name: Back up Swarm state while Docker is stopped
+      block:
+        - name: Stop Docker on the administrative manager
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: stopped
+
+        - name: Encrypt the complete Swarm state directory
+          ansible.builtin.shell: >-
+            set -o pipefail && umask 077 &&
+            tar --numeric-owner --acls --xattrs -C {{ docker_data_root | quote }} -czf - swarm |
+            openssl enc -aes-256-cbc -pbkdf2 -salt
+            -pass file:{{ swarm_backup_pass_file | quote }}
+            -out {{ swarm_backup_file | quote }}.partial
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Validate the encrypted Swarm archive
+          ansible.builtin.shell: >-
+            set -o pipefail &&
+            openssl enc -d -aes-256-cbc -pbkdf2
+            -pass file:{{ swarm_backup_pass_file | quote }}
+            -in {{ swarm_backup_file | quote }}.partial | tar -tzf - >/dev/null
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Publish the validated archive
+          ansible.builtin.command:
+            argv: [/usr/bin/mv, "{{ swarm_backup_file }}.partial", "{{ swarm_backup_file }}"]
+          changed_when: true
+
+        - name: Write Swarm restoration metadata
+          ansible.builtin.copy:
+            dest: "{{ swarm_backup_file }}.metadata.yml"
+            mode: "0600"
+            content: |
+              created_utc: {{ ansible_facts.date_time.iso8601 }}
+              source_node: {{ inventory_hostname }}
+              expected_cluster_id: {{ swarm_expected_cluster_id }}
+              docker_data_root: {{ docker_data_root }}
+              docker_engine_version: {{ docker_engine_version }}
+      always:
+        - name: Restart Docker after Swarm backup
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: started
+
+        - name: Wait for Docker and Swarm readiness
+          ansible.builtin.command:
+            argv: [/usr/bin/docker, info, --format, "{{ '{{.Swarm.LocalNodeState}}' }}"]
+          register: swarm_backup_docker_ready
+          changed_when: false
+          retries: 30
+          delay: 4
+          until: swarm_backup_docker_ready.stdout | trim == 'active'
+
+    - name: Retain the eight newest validated Swarm archives
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        find {{ swarm_backup_dir | quote }} -maxdepth 1 -type f
+        -name 'swarm-*.tar.gz.enc' -printf '%T@ %p\n' | sort -rn |
+        cut -d' ' -f2- | tail -n +9 | while IFS= read -r archive; do
+          echo "${archive}";
+          rm -f -- "${archive}" "${archive}.metadata.yml";
+        done
+      args:
+        executable: /bin/bash
+      register: swarm_backup_pruned_archives
+      changed_when: swarm_backup_pruned_archives.stdout | length > 0
+
+    - name: Require manager quorum after backup
+      ansible.builtin.shell: >-
+        set -o pipefail && test "$(docker node ls --filter role=manager
+        --format '{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.ManagerStatus{{ '}}' }}' |
+        grep -Ec '^Ready .*(Reachable|Leader)')" -eq 3
+      args:
+        executable: /bin/bash
+      changed_when: false

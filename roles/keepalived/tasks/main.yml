@@ -1,0 +1,54 @@
+---
+- name: Validate Keepalived topology and secret
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups['managers']
+      - keepalived_interface == ansible_facts.default_ipv4.interface
+      - ansible_facts.default_ipv4.address == ansible_host
+      - keepalived_priority | int >= 1
+      - keepalived_priority | int <= 254
+      - keepalived_auth_pass | length == 8
+    fail_msg: >-
+      Keepalived requires the inventory interface/address/priority and an
+      exactly eight-character vault_keepalived_auth_pass.
+  no_log: true
+
+- name: Install Keepalived
+  ansible.builtin.apt:
+    name: keepalived
+    state: present
+    update_cache: true
+
+- name: Install the local Swarm health check
+  ansible.builtin.template:
+    src: check-swarm.sh.j2
+    dest: /usr/local/sbin/check-swarm-manager
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart keepalived
+
+- name: Render and validate the Keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/keepalived --config-test --use-file=%s
+  notify: Restart keepalived
+  no_log: true
+
+- name: Enable and start Keepalived
+  ansible.builtin.systemd_service:
+    name: keepalived.service
+    state: started
+    enabled: true
+
+- name: Flush Keepalived restart handler
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Keepalived is active
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, is-active, keepalived.service]
+  changed_when: false

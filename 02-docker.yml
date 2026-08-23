@@ -1,0 +1,76 @@
+---
+- name: Ensure DietPi owns initial Docker integration
+  hosts: cluster
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: dietpi_preflight
+  tasks:
+    - name: Read DietPi Docker software catalogue states
+      ansible.builtin.command:
+        argv: [/boot/dietpi/dietpi-software, list, --machine-readable, "{{ item | string }}"]
+      loop: "{{ docker_dietpi_software_ids }}"
+      register: dietpi_docker_catalogue_states
+      changed_when: false
+      check_mode: false
+
+    - name: Check Swarm state before initial DietPi integration
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, info, --format, "{{ '{{.Swarm.LocalNodeState}}' }}"]
+      register: dietpi_docker_initial_swarm_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Refuse initial Docker integration on an active Swarm node
+      ansible.builtin.assert:
+        that: dietpi_docker_initial_swarm_state.stdout | default('inactive') != 'active'
+        fail_msg: >-
+          DietPi Docker integration is incomplete on an active Swarm node.
+          Drain and repair this node in an explicit maintenance window.
+      when: >-
+        dietpi_docker_catalogue_states.results |
+        map(attribute='stdout') | select('search', '\\|2\\|') |
+        list | length != docker_dietpi_software_ids | length
+
+    - name: Install Docker and Compose through DietPi
+      ansible.builtin.command:
+        argv: "{{ ['/boot/dietpi/dietpi-software', 'install'] + (docker_dietpi_software_ids | map('string') | list) }}"
+      changed_when: true
+      when: >-
+        dietpi_docker_catalogue_states.results |
+        map(attribute='stdout') | select('search', '\\|2\\|') |
+        list | length != docker_dietpi_software_ids | length
+
+- name: Validate the pinned Docker version on every DietPi base before rollout
+  hosts: cluster
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Calculate the release-specific Docker package version
+      ansible.builtin.set_fact:
+        dietpi_docker_target_package: >-
+          5:{{ docker_engine_version }}-1~debian.{{ ansible_facts.distribution_major_version }}~{{ ansible_facts.distribution_release }}
+
+    - name: Read Docker versions available from DietPi's configured repository
+      ansible.builtin.command:
+        argv: [/usr/bin/apt-cache, madison, docker-ce]
+      register: dietpi_docker_available_versions
+      changed_when: false
+      check_mode: false
+
+    - name: Require the selected Docker version for this base release
+      ansible.builtin.assert:
+        that: dietpi_docker_target_package in dietpi_docker_available_versions.stdout
+        fail_msg: >-
+          Docker {{ dietpi_docker_target_package }} is unavailable for
+          {{ ansible_facts.distribution_release }}; no rolling changes will begin.
+
+- name: Reconcile DietPi Docker engine safely
+  hosts: cluster
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: docker_engine

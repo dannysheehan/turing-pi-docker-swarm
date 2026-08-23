@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+manager="${1:-tpi-mgr-01}"
+service="portainer_portainer"
+
+log_output="$({
+  uv run --frozen ansible "${manager}" --become \
+    --ask-vault-pass \
+    --module-name ansible.builtin.command \
+    --args "docker service logs --since 5m --timestamps --raw ${service}"
+} 2>&1)"
+
+token_line="$({
+  printf '%s\n' "${log_output}" | grep 'setup_token=' | sort | tail -n 1
+} || true)"
+setup_token="$({
+  printf '%s\n' "${token_line}" | grep -oE '[[:xdigit:]]{64}' | tail -n 1
+} || true)"
+
+if [[ ! "${setup_token}" =~ ^[[:xdigit:]]{64}$ ]]; then
+  printf '%s\n' \
+    'No current Portainer setup token was found.' \
+    'Run `make portainer-restart`, then retry within five minutes.' >&2
+  exit 1
+fi
+
+printf '%s\n' "${setup_token}"
+unset setup_token token_line log_output
