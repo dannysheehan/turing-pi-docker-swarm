@@ -8,6 +8,42 @@
   roles:
     - role: nfs_common
 
+- name: Quiesce legacy Keepalived instances before unicast migration
+  hosts: managers
+  tags: [keepalived]
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Detect an existing unicast Keepalived configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/grep
+          - --quiet
+          - --extended-regexp
+          - '^[[:space:]]*unicast_peer[[:space:]]*[{]'
+          - /etc/keepalived/keepalived.conf
+      register: keepalived_live_unicast
+      changed_when: false
+      failed_when: keepalived_live_unicast.rc not in [0, 1, 2]
+      check_mode: false
+
+    - name: Inspect the live Keepalived service state
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, is-active, keepalived.service]
+      register: keepalived_live_service
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Quiesce a legacy Keepalived instance before unicast migration
+      ansible.builtin.systemd_service:
+        name: keepalived.service
+        state: stopped
+      when:
+        - keepalived_live_unicast.rc != 0
+        - keepalived_live_service.stdout | trim == 'active'
+
 - name: Reconcile manager virtual IP
   hosts: managers
   tags: [keepalived]
