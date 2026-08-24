@@ -1,6 +1,6 @@
 ---
 - name: Initialize a fresh Portainer administrator account
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   any_errors_fatal: true
   tasks:

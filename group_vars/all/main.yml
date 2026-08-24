@@ -3,8 +3,13 @@ ansible_user: dietpi
 ansible_become: true
 
 dietpi_min_version: "10.6"
-dietpi_ntp_mode: 4
+# DietPi mode 0 delegates live time synchronization to Chrony. Replacement
+# images use mode 4 until Ansible has installed Chrony.
+dietpi_ntp_mode: 0
+dietpi_firstboot_ntp_mode: 4
 dietpi_ntp_mirror: default
+dietpi_base_chrony_pool: 2.debian.pool.ntp.org
+dietpi_base_chrony_max_correction_seconds: 0.05
 dietpi_ramlog_size_mb: 50
 dietpi_min_root_free_mb: 512
 
@@ -17,12 +22,11 @@ docker_dietpi_software_ids:
   - 134
 docker_data_root: /mnt/dietpi_userdata/docker-data
 docker_engine_version: 29.7.2
-docker_force_uniform: true
 
 # Portainer (deployed by 04-services / portainer role)
 portainer_enabled: true
 portainer_version: 2.39.6
-portainer_primary_manager: tpi-mgr-01
+portainer_primary_manager: "{{ swarm_primary_manager }}"
 portainer_data_dir: /mnt/dietpi_userdata/portainer-data
 portainer_https_port: 9443
 portainer_database_secret_name: portainer_database_key  # pragma: allowlist secret

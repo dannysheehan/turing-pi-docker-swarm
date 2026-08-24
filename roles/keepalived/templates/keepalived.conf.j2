@@ -10,11 +10,11 @@ vrrp_script check_swarm_manager {
     timeout 2
     fall 2
     rise 2
-    weight -60
 }
 
 vrrp_instance swarm_front {
     state BACKUP
+    nopreempt
     interface {{ keepalived_interface }}
     virtual_router_id {{ keepalived_virtual_router_id }}
     priority {{ keepalived_priority }}

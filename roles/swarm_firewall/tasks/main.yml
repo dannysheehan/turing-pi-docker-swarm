@@ -39,7 +39,9 @@
       [Unit]
       Description=Ansible-owned cluster firewall chains
       After=network-online.target docker.service
+      Requires=docker.service
       Wants=network-online.target
+      PartOf=docker.service
 
       [Service]
       Type=oneshot
@@ -50,19 +52,72 @@
       WantedBy=multi-user.target
   register: swarm_firewall_unit
 
+- name: Create the Docker service drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Couple firewall reapplication to the Docker lifecycle
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/20-ansible-swarm-firewall.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Wants=ansible-swarm-firewall.service
+  register: swarm_firewall_docker_dropin
+
 - name: Apply and persist the dedicated firewall chains
   ansible.builtin.systemd_service:
     name: ansible-swarm-firewall.service
     enabled: true
     state: restarted
-    daemon_reload: "{{ swarm_firewall_unit.changed }}"
-  when: swarm_firewall_program.changed or swarm_firewall_unit.changed
+    daemon_reload: >-
+      {{ swarm_firewall_unit.changed or swarm_firewall_docker_dropin.changed }}
+  when: >-
+    swarm_firewall_program.changed or
+    swarm_firewall_unit.changed or
+    swarm_firewall_docker_dropin.changed
 
 - name: Ensure firewall persistence is enabled
   ansible.builtin.systemd_service:
     name: ansible-swarm-firewall.service
     enabled: true
     state: started
+
+- name: Inspect Ansible-owned firewall jumps
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [/usr/sbin/iptables, -C, INPUT, -j, ANSIBLE-INPUT]
+    - [/usr/sbin/iptables, -C, DOCKER-USER, -j, ANSIBLE-PORTAINER]
+    - [/usr/sbin/ip6tables, -C, INPUT, -j, ANSIBLE-INPUT]
+  register: swarm_firewall_jump_checks
+  changed_when: false
+  failed_when: false
+
+- name: Reapply firewall rules when runtime chains have drifted
+  ansible.builtin.systemd_service:
+    name: ansible-swarm-firewall.service
+    state: restarted
+  when: >-
+    swarm_firewall_jump_checks.results |
+    selectattr('rc', 'ne', 0) |
+    list |
+    length > 0
+
+- name: Verify Ansible-owned firewall jumps
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [/usr/sbin/iptables, -C, INPUT, -j, ANSIBLE-INPUT]
+    - [/usr/sbin/iptables, -C, DOCKER-USER, -j, ANSIBLE-PORTAINER]
+    - [/usr/sbin/ip6tables, -C, INPUT, -j, ANSIBLE-INPUT]
+  changed_when: false
 
 - name: Select firewall peer probes
   ansible.builtin.set_fact:

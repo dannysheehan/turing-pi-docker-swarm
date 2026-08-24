@@ -1,6 +1,6 @@
 ---
 - name: Validate a requested encrypted Swarm restoration
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: true
   any_errors_fatal: true
   vars:
@@ -53,13 +53,26 @@
   gather_facts: false
   any_errors_fatal: true
   tasks:
-    - name: Stop Docker on the manager
+    - name: Stop Docker activation units on the manager
       ansible.builtin.systemd_service:
-        name: docker.service
+        name: "{{ item }}"
         state: stopped
+      loop:
+        - docker.socket
+        - docker.service
+
+    - name: Verify Docker activation units are stopped on the manager
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, show, --property=ActiveState, --value, "{{ item }}"]
+      loop:
+        - docker.socket
+        - docker.service
+      register: swarm_restore_stopped_units
+      changed_when: false
+      failed_when: swarm_restore_stopped_units.stdout | trim != 'inactive'
 
 - name: Restore Swarm state on the administrative manager
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: true
   any_errors_fatal: true
   vars:
@@ -78,16 +91,19 @@
           ansible.builtin.shell: >-
             set -o pipefail && openssl enc -d -aes-256-cbc -pbkdf2
             -pass file:{{ swarm_restore_pass_file | quote }}
-            -in {{ hostvars['tpi-mgr-01'].swarm_restore_resolved_archive.stdout | quote }} |
+            -in {{ hostvars[swarm_primary_manager].swarm_restore_resolved_archive.stdout | quote }} |
             tar --numeric-owner --acls --xattrs -xzf - -C {{ docker_data_root | quote }}
           args:
             executable: /bin/bash
           changed_when: true
 
-        - name: Start Docker with restored Swarm state
+        - name: Start Docker activation units with restored Swarm state
           ansible.builtin.systemd_service:
-            name: docker.service
+            name: "{{ item }}"
             state: started
+          loop:
+            - docker.socket
+            - docker.service
 
         - name: Force a new quorum from the restored manager
           ansible.builtin.command:
@@ -107,10 +123,13 @@
           changed_when: false
           failed_when: swarm_restore_cluster_id.stdout | trim != swarm_expected_cluster_id
       rescue:
-        - name: Stop Docker after failed restoration
+        - name: Stop Docker activation units after failed restoration
           ansible.builtin.systemd_service:
-            name: docker.service
+            name: "{{ item }}"
             state: stopped
+          loop:
+            - docker.socket
+            - docker.service
 
         - name: Preserve the failed restored state
           ansible.builtin.command:
@@ -125,27 +144,33 @@
             argv: [/usr/bin/mv, "{{ swarm_restore_rollback_dir }}", "{{ docker_data_root }}/swarm"]
           changed_when: true
 
-        - name: Restart Docker with pre-restore state
+        - name: Restart Docker activation units with pre-restore state
           ansible.builtin.systemd_service:
-            name: docker.service
+            name: "{{ item }}"
             state: started
+          loop:
+            - docker.socket
+            - docker.service
 
         - name: Report restoration rollback
           ansible.builtin.fail:
-            msg: Restoration failed and the pre-restore state was put back on tpi-mgr-01.
+            msg: Restoration failed and the pre-restore state was put back on {{ swarm_primary_manager }}.
 
 - name: Start the remaining managers after restoration
-  hosts: managers:!tpi-mgr-01
+  hosts: managers:!primary_manager
   gather_facts: false
   serial: 1
   tasks:
-    - name: Start Docker on the manager
+    - name: Start Docker activation units on the manager
       ansible.builtin.systemd_service:
-        name: docker.service
+        name: "{{ item }}"
         state: started
+      loop:
+        - docker.socket
+        - docker.service
 
 - name: Validate restored manager quorum
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   tasks:
     - name: Wait for all three restored managers

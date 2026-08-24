@@ -1,4 +1,11 @@
 ---
+- name: Require explicit OS maintenance confirmation
+  ansible.builtin.assert:
+    that: os_maintenance_confirm | bool
+    fail_msg: >-
+      OS maintenance drains nodes, installs updates, and may reboot them. Set
+      os_maintenance_confirm=true only during an approved maintenance window.
+
 - name: Install the safe DietPi update wrapper
   ansible.builtin.template:
     src: dietpi-update-safe.sh.j2
@@ -160,12 +167,10 @@
       delay: 4
       until: os_maintenance_docker_ready.rc == 0
 
-    - name: Require synchronized system time
+    - name: Wait for Chrony synchronization
       ansible.builtin.command:
-        argv: [/usr/bin/timedatectl, show, --property=NTPSynchronized, --value]
-      register: os_maintenance_time_sync
+        argv: [/usr/bin/chronyc, waitsync, "30", "0.1"]
       changed_when: false
-      failed_when: os_maintenance_time_sync.stdout | trim != 'yes'
       check_mode: false
       when: not ansible_check_mode
 

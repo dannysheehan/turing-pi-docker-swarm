@@ -1,11 +1,13 @@
 ---
 - name: Establish and validate the Swarm administration manager
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   tasks:
     - name: Assert primary manager inventory membership
       ansible.builtin.assert:
         that:
+          - groups['primary_manager'] | length == 1
+          - inventory_hostname == swarm_primary_manager
           - swarm_primary_manager in groups['managers']
 
     - name: Detect primary manager Swarm state
@@ -25,18 +27,17 @@
           - swarm_primary_state.stdout in ['inactive', 'active']
         fail_msg: "Unexpected Swarm state {{ swarm_primary_state.stdout }} on {{ swarm_primary_manager }}"
 
-    - name: Initialize Swarm on inactive primary manager
-      ansible.builtin.command:
-        argv:
-          - docker
-          - swarm
-          - init
-          - --advertise-addr
-          - "{{ ansible_host }}"
-          - --data-path-addr
-          - "{{ ansible_host }}"
-      when: swarm_primary_state.stdout == 'inactive'
-      changed_when: true
+    - name: Require an explicitly bootstrapped Swarm
+      ansible.builtin.assert:
+        that:
+          - swarm_primary_state.stdout == 'active'
+        fail_msg: >-
+          {{ swarm_primary_manager }} is not a Swarm manager. Normal
+          convergence never creates a new random cluster or replaces recorded
+          Swarm state. For a genuinely new installation, run
+          03-swarm-bootstrap.yml with its explicit confirmation, record the
+          generated cluster ID in group_vars/all/local.yml, then rerun this
+          playbook. For lost state, use the documented restore workflow.
 
     - name: Read authoritative Swarm cluster ID
       ansible.builtin.command:
@@ -203,7 +204,7 @@
              else swarm_managed_node.stdout.split('|')[4]) == ansible_host
 
 - name: Validate final Swarm topology
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   tasks:
     - name: Read final Swarm node state
@@ -233,10 +234,10 @@
       ansible.builtin.assert:
         that:
           - swarm_final_nodes.stdout_lines | length == groups['cluster'] | length
-          - swarm_final_nodes.stdout_lines | select('search', '\\|Ready\\|') | list | length == groups['cluster'] | length
-          - swarm_final_nodes.stdout_lines | select('search', '\\|(Leader|Reachable)\\|') | list | length == groups['managers'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '[|]Ready[|]') | list | length == groups['cluster'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '[|](Leader|Reachable)[|]') | list | length == groups['managers'] | length
           - >-
             swarm_final_nodes.stdout_lines |
-            select('search', '\\|' ~ (docker_engine_version | regex_escape) ~ '$') |
+            select('search', '[|]' ~ (docker_engine_version | regex_escape) ~ '$') |
             list | length == groups['cluster'] | length
           - swarm_final_autolock.stdout | trim == (swarm_autolock | bool | ternary('true', 'false'))

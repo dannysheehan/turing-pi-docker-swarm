@@ -6,10 +6,12 @@ This repository converges seven ARM64 DietPi nodes into a three-manager,
 four-worker Docker Swarm. Six nodes use DietPi's Bookworm base and
 `tpi-wrk-04` uses DietPi's Trixie base. All seven are full DietPi systems.
 
-`tpi-mgr-01` is the administrative endpoint. It is not assumed to be the Raft
-leader. The expected existing Swarm ID is configured by
+The host in the single-member `primary_manager` inventory group is the
+administrative endpoint. It must match `swarm_primary_manager` and is not
+assumed to be the Raft leader. The expected existing Swarm ID is configured by
 `swarm_expected_cluster_id`; it is an identifier, not an authentication
-secret.
+secret. `portainer_primary_manager` derives from `swarm_primary_manager`, so
+Portainer follows the same explicitly selected administrative manager.
 
 ## Ownership boundary
 
@@ -19,7 +21,8 @@ DietPi owns its lifecycle and platform integration:
 - Docker's official repository, systemd override, iptables backend, cgroups,
   journald driver, and `/mnt/dietpi_userdata/docker-data` integration;
 - static `/etc/network/interfaces` configuration;
-- `systemd-timesyncd` mode 4 and DietPi RAMlog.
+- DietPi's custom time mode boundary, with Chrony as the Ansible-managed live
+  time daemon, and DietPi RAMlog.
 
 Ansible validates those invariants and owns live hostname, timezone, the
 managed cluster block in `/etc/hosts`, exact Docker engine package versions,
@@ -29,7 +32,8 @@ replaces RAMlog, deletes Swarm state, or silently demotes managers.
 
 The template at `templates/dietpi.txt.firstboot.example.j2` is only for
 imaging a replacement node. First-boot `AUTO_SETUP_*` values are not used as
-live configuration controls.
+live configuration controls. It deliberately uses DietPi time mode 4 until
+Ansible switches the live node to custom mode 0 and installs Chrony.
 
 ## Controller setup and validation
 
@@ -112,6 +116,11 @@ export OP_SERVICE_ACCOUNT_TOKEN='your-controller-or-CI-secret'
 op read 'op://Automation/Portainer/database-key' >/dev/null
 ```
 
+Unlock 1Password before starting a fleet-wide Ansible run. The repository
+allows 60 seconds for SSH and privilege-escalation responses so the 1Password
+SSH agent can approve the initial connection batch without Ansible using its
+short default timeout.
+
 Never save `OP_SERVICE_ACCOUNT_TOKEN` in this repository, an Ansible variable,
 or a Vault file. Store it in the controller keychain or CI secret store. The
 Portainer database key must be exactly 32 printable ASCII characters and is
@@ -193,9 +202,10 @@ are not an alternative rollout sequence.
 
 | Interface | Use |
 |---|---|
-| `site.yml` | Normal bootstrap and convergence of the complete cluster |
+| `site.yml` | Normal runtime preparation and convergence of an existing Swarm |
 | `00-preflight.yml` | Read-only DietPi and host prerequisite validation |
 | `01-provision.yml` through `04-services.yml` | Targeted baseline, Docker, Swarm, or service reconciliation |
+| `03-swarm-bootstrap.yml` | Explicit, one-time initialization of a genuinely new Swarm |
 | `05-os-maintenance.yml` | Explicit rolling DietPi/OS maintenance |
 | `06-portainer-setup.yml` | One-time, token-aware creation of a fresh Portainer administrator |
 | `08-firewall.yml` | Explicit serial firewall activation |
@@ -208,7 +218,31 @@ are not an alternative rollout sequence.
 scoped operator convergence, for example `--tags portainer`.
 
 `site.yml` does not perform OS upgrades, Portainer data migration, firewall
-activation, Swarm backup/restore, or emergency reboots.
+activation, first Swarm initialization, Swarm backup/restore, or emergency
+reboots.
+
+## First Swarm initialization
+
+Normal convergence requires `swarm_primary_manager` to belong to the recorded
+Swarm. It deliberately refuses to initialize an inactive manager: Docker
+generates a random cluster ID, so initialization cannot safely satisfy a
+preconfigured `swarm_expected_cluster_id` guard.
+
+For a genuinely new cluster, leave `swarm_expected_cluster_id` empty or set to
+the example placeholder and run the dedicated operator playbook:
+
+```sh
+uv run --frozen ansible-playbook 03-swarm-bootstrap.yml \
+  -e swarm_first_init=true \
+  -e swarm_init_confirm=INITIALIZE-NEW-SWARM
+```
+
+The play refuses check mode, requires all seven nodes to be inactive, and
+never removes Swarm state. Record the generated ID it prints in the ignored
+`group_vars/all/local.yml`, then run `03-swarm-init.yml` or `site.yml` to join
+the other managers and workers. Do not use first initialization after state
+loss; restore the encrypted Swarm backup so the recorded cluster identity is
+preserved.
 
 The completed NFS-to-local Portainer migration playbook has been removed. It
 targeted the retired HTTP-9000/NFS deployment and must not be rerun against
@@ -238,10 +272,11 @@ Portainer deployment and backup action.
 
 ## Portainer architecture and initial setup
 
-Portainer CE 2.39.6 runs as one server replica pinned to `tpi-mgr-01`, with a
-global agent on all seven nodes. Agents use a private overlay and the server
-connects to `tasks.agent:9001`. Only HTTPS 9443 is published; 9000 and 8000 are
-not published. Updates and rollbacks are one-at-a-time and stop-first. Its
+Portainer CE 2.39.6 runs as one server replica pinned to the host selected by
+`primary_manager`, with a global agent on all seven nodes. Agents use a private
+overlay and the server connects to `tasks.agent:9001`. Only HTTPS 9443 is
+published; 9000 and 8000 are not published. Updates and rollbacks are
+one-at-a-time and stop-first. Its
 database-encryption key is synchronized from 1Password into a versioned native
 Swarm secret and mounted only into the server task.
 
@@ -250,8 +285,8 @@ The agent mounts DietPi's actual Docker volume store from
 `/var/lib/docker/volumes`; it does not assume Debian's default host path.
 
 The encrypted database is stored at
-`/mnt/dietpi_userdata/portainer-data` on `tpi-mgr-01`, not NFS. Ordinary
-convergence refuses to move or initialize data implicitly.
+`/mnt/dietpi_userdata/portainer-data` on `portainer_primary_manager`, not NFS.
+Ordinary convergence refuses to move or initialize data implicitly.
 
 Portainer 2.39 generates an ephemeral setup token when no administrator exists.
 The token is a short-lived bootstrap credential written to the server task log;
@@ -297,8 +332,17 @@ boundary. NAS-side ownership and ACL policy remain owned by the NAS.
 
 General maintenance holds `docker-ce` and `docker-ce-cli`, drains each node,
 runs `/boot/dietpi/dietpi-update 1`, applies an APT dist-upgrade, reboots only
-when required, and checks DietPi postboot, Docker, time sync, and Swarm before
-restoring the original availability.
+when required, and checks DietPi postboot, Docker, Chrony synchronization, and
+Swarm before restoring the original availability. It requires explicit
+operator confirmation:
+
+```sh
+uv run --frozen ansible-playbook 05-os-maintenance.yml \
+  -e os_maintenance_confirm=true --ask-vault-pass
+```
+
+Use `--limit` to prove the workflow on one worker before expanding it. This is
+ordinary release maintenance; it does not upgrade a Bookworm node to Trixie.
 
 The updater wrapper watches DietPi's update log. Only after incremental
 patching has completed does it terminate a descendant `whiptail`, selecting
@@ -313,10 +357,10 @@ uv run --frozen ansible-playbook 98-swarm-backup.yml \
   -e swarm_backup_confirm=true --ask-vault-pass
 ```
 
-This requires three healthy managers, stops Docker only on `tpi-mgr-01`,
-archives the complete configured `swarm` directory, validates the encrypted
-archive, always restarts Docker, and retains the newest eight archives plus
-metadata.
+This requires three healthy managers, stops Docker only on
+`swarm_primary_manager`, archives the complete configured `swarm` directory,
+validates the encrypted archive, always restarts Docker, and retains the newest
+eight archives plus metadata.
 
 Restoration is destructive and guarded by the exact cluster ID:
 

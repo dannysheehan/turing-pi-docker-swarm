@@ -1,0 +1,88 @@
+---
+- name: Validate every node before first Swarm initialization
+  hosts: cluster
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Detect local Swarm state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.LocalNodeState}}' }}"
+      register: swarm_bootstrap_node_state
+      changed_when: false
+      check_mode: false
+
+    - name: Require every node to be outside a Swarm
+      ansible.builtin.assert:
+        that:
+          - swarm_bootstrap_node_state.stdout == 'inactive'
+        fail_msg: >-
+          {{ inventory_hostname }} reports Swarm state
+          {{ swarm_bootstrap_node_state.stdout }}. First initialization is
+          allowed only when every inventory node is inactive. This playbook
+          never removes existing Swarm state.
+
+- name: Explicitly initialize a genuinely new Swarm
+  hosts: primary_manager
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Validate destructive first-initialization approval
+      ansible.builtin.assert:
+        that:
+          - groups['primary_manager'] | length == 1
+          - inventory_hostname == swarm_primary_manager
+          - swarm_primary_manager in groups['managers']
+          - not ansible_check_mode
+          - swarm_first_init | default(false) | bool
+          - >-
+            swarm_init_confirm | default('') == 'INITIALIZE-NEW-SWARM'
+          - >-
+            (swarm_expected_cluster_id | default('')) in
+            ['', 'replace-with-existing-swarm-id']
+        fail_msg: >-
+          First initialization requires normal execution, -e
+          swarm_first_init=true, the exact confirmation -e
+          swarm_init_confirm=INITIALIZE-NEW-SWARM, and no recorded cluster ID.
+          Never clear a recorded ID to recover a lost cluster; restore its
+          backed-up Swarm state instead.
+
+    - name: Initialize Swarm on the administrative manager
+      ansible.builtin.command:
+        argv:
+          - docker
+          - swarm
+          - init
+          - --advertise-addr
+          - "{{ ansible_host }}"
+          - --data-path-addr
+          - "{{ ansible_host }}"
+      changed_when: true
+
+    - name: Read generated Swarm cluster ID
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - "{{ '{{.Swarm.Cluster.ID}}' }}"
+      register: swarm_bootstrap_cluster_id
+      changed_when: false
+      check_mode: false
+
+    - name: Require a generated Swarm cluster ID
+      ansible.builtin.assert:
+        that:
+          - swarm_bootstrap_cluster_id.stdout | length > 0
+        fail_msg: "Docker initialized without returning a Swarm cluster ID."
+
+    - name: Report the cluster ID that must be recorded
+      ansible.builtin.debug:
+        msg: >-
+          New Swarm ID: {{ swarm_bootstrap_cluster_id.stdout }}. Set
+          swarm_expected_cluster_id to this exact value in
+          group_vars/all/local.yml, then run 03-swarm-init.yml (or site.yml)
+          to join and validate the remaining nodes.

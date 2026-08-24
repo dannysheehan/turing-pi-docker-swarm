@@ -39,14 +39,14 @@
   notify: Restart keepalived
   no_log: true
 
+- name: Flush Keepalived restart handler
+  ansible.builtin.meta: flush_handlers
+
 - name: Enable and start Keepalived
   ansible.builtin.systemd_service:
     name: keepalived.service
     state: started
     enabled: true
-
-- name: Flush Keepalived restart handler
-  ansible.builtin.meta: flush_handlers
 
 - name: Verify Keepalived is active
   ansible.builtin.command:
