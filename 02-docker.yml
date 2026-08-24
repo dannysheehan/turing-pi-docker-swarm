@@ -20,7 +20,7 @@
           {{ dietpi_docker_catalogue_states.stdout_lines
              | select(
                  'match',
-                 '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')\\|2\\|'
+                 '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')[|]2[|]'
                )
              | list | length }}
 

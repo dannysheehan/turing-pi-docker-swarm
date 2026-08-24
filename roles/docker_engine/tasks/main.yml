@@ -15,7 +15,7 @@
       {{ docker_engine_software_states.stdout_lines
          | select(
              'match',
-             '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')\\|2\\|'
+             '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')[|]2[|]'
            )
          | list | length != docker_dietpi_software_ids | length }}
 
