@@ -327,8 +327,17 @@ boundary. NAS-side ownership and ACL policy remain owned by the NAS.
 
 General maintenance holds `docker-ce` and `docker-ce-cli`, drains each node,
 runs `/boot/dietpi/dietpi-update 1`, applies an APT dist-upgrade, reboots only
-when required, and checks DietPi postboot, Docker, time sync, and Swarm before
-restoring the original availability.
+when required, and checks DietPi postboot, Docker, Chrony synchronization, and
+Swarm before restoring the original availability. It requires explicit
+operator confirmation:
+
+```sh
+uv run --frozen ansible-playbook 05-os-maintenance.yml \
+  -e os_maintenance_confirm=true --ask-vault-pass
+```
+
+Use `--limit` to prove the workflow on one worker before expanding it. This is
+ordinary release maintenance; it does not upgrade a Bookworm node to Trixie.
 
 The updater wrapper watches DietPi's update log. Only after incremental
 patching has completed does it terminate a descendant `whiptail`, selecting
