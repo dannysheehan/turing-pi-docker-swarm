@@ -5,8 +5,6 @@
       - /boot/dietpi/dietpi-software
       - list
       - --machine-readable
-      - "{{ item | string }}"
-  loop: "{{ docker_dietpi_software_ids }}"
   register: docker_engine_software_states
   changed_when: false
   check_mode: false
@@ -14,9 +12,11 @@
 - name: Calculate DietPi Docker integration state
   ansible.builtin.set_fact:
     docker_engine_dietpi_install_required: >-
-      {{ docker_engine_software_states.results
-         | map(attribute='stdout')
-         | select('search', '\\|2\\|')
+      {{ docker_engine_software_states.stdout_lines
+         | select(
+             'match',
+             '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')\\|2\\|'
+           )
          | list | length != docker_dietpi_software_ids | length }}
 
 - name: Gather installed package facts

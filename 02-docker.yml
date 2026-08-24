@@ -9,11 +9,20 @@
   tasks:
     - name: Read DietPi Docker software catalogue states
       ansible.builtin.command:
-        argv: [/boot/dietpi/dietpi-software, list, --machine-readable, "{{ item | string }}"]
-      loop: "{{ docker_dietpi_software_ids }}"
+        argv: [/boot/dietpi/dietpi-software, list, --machine-readable]
       register: dietpi_docker_catalogue_states
       changed_when: false
       check_mode: false
+
+    - name: Calculate exact installed DietPi Docker software count
+      ansible.builtin.set_fact:
+        dietpi_docker_installed_software_count: >-
+          {{ dietpi_docker_catalogue_states.stdout_lines
+             | select(
+                 'match',
+                 '^(' ~ (docker_dietpi_software_ids | map('string') | join('|')) ~ ')\\|2\\|'
+               )
+             | list | length }}
 
     - name: Check Swarm state before initial DietPi integration
       ansible.builtin.command:
@@ -30,18 +39,16 @@
           DietPi Docker integration is incomplete on an active Swarm node.
           Drain and repair this node in an explicit maintenance window.
       when: >-
-        dietpi_docker_catalogue_states.results |
-        map(attribute='stdout') | select('search', '\\|2\\|') |
-        list | length != docker_dietpi_software_ids | length
+        dietpi_docker_installed_software_count | int
+        != docker_dietpi_software_ids | length
 
     - name: Install Docker and Compose through DietPi
       ansible.builtin.command:
         argv: "{{ ['/boot/dietpi/dietpi-software', 'install'] + (docker_dietpi_software_ids | map('string') | list) }}"
       changed_when: true
       when: >-
-        dietpi_docker_catalogue_states.results |
-        map(attribute='stdout') | select('search', '\\|2\\|') |
-        list | length != docker_dietpi_software_ids | length
+        dietpi_docker_installed_software_count | int
+        != docker_dietpi_software_ids | length
 
 - name: Validate the pinned Docker version on every DietPi base before rollout
   hosts: cluster
