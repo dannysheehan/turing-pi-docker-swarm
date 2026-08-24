@@ -116,6 +116,11 @@ export OP_SERVICE_ACCOUNT_TOKEN='your-controller-or-CI-secret'
 op read 'op://Automation/Portainer/database-key' >/dev/null
 ```
 
+Unlock 1Password before starting a fleet-wide Ansible run. The repository
+allows 60 seconds for SSH and privilege-escalation responses so the 1Password
+SSH agent can approve the initial connection batch without Ansible using its
+short default timeout.
+
 Never save `OP_SERVICE_ACCOUNT_TOKEN` in this repository, an Ansible variable,
 or a Vault file. Store it in the controller keychain or CI secret store. The
 Portainer database key must be exactly 32 printable ASCII characters and is
