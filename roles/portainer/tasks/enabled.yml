@@ -90,7 +90,6 @@
       - /usr/bin/docker
       - stack
       - deploy
-      - --detach=true
       - --prune
       - --compose-file
       - "{{ portainer_stack_dir }}/portainer-stack.yml"

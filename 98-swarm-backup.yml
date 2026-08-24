@@ -1,6 +1,6 @@
 ---
 - name: Create an operator-requested encrypted Swarm backup
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: true
   any_errors_fatal: true
   vars:

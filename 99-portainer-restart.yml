@@ -1,6 +1,6 @@
 ---
 - name: Restart Portainer with a one-at-a-time rolling service update
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   tasks:
     - name: Require Portainer to be enabled

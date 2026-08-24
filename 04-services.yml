@@ -18,7 +18,7 @@
     - role: keepalived
 
 - name: Reconcile Portainer Swarm services
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   tags: [portainer]
   gather_facts: true
   roles:

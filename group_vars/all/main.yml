@@ -17,12 +17,11 @@ docker_dietpi_software_ids:
   - 134
 docker_data_root: /mnt/dietpi_userdata/docker-data
 docker_engine_version: 29.7.2
-docker_force_uniform: true
 
 # Portainer (deployed by 04-services / portainer role)
 portainer_enabled: true
 portainer_version: 2.39.6
-portainer_primary_manager: tpi-mgr-01
+portainer_primary_manager: "{{ swarm_primary_manager }}"
 portainer_data_dir: /mnt/dietpi_userdata/portainer-data
 portainer_https_port: 9443
 portainer_database_secret_name: portainer_database_key  # pragma: allowlist secret

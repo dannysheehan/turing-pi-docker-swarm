@@ -22,6 +22,10 @@ workers:
     tpi-wrk-04:
       ansible_host: 192.0.2.57
 
+primary_manager:
+  hosts:
+    tpi-mgr-01:
+
 cluster:
   children:
     managers:

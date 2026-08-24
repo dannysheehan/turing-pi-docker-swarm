@@ -6,7 +6,7 @@
       - list
       - --machine-readable
       - "{{ item | string }}"
-  loop: "{{ docker_engine_dietpi_software_ids }}"
+  loop: "{{ docker_dietpi_software_ids }}"
   register: docker_engine_software_states
   changed_when: false
   check_mode: false
@@ -17,7 +17,7 @@
       {{ docker_engine_software_states.results
          | map(attribute='stdout')
          | select('search', '\\|2\\|')
-         | list | length != docker_engine_dietpi_software_ids | length }}
+         | list | length != docker_dietpi_software_ids | length }}
 
 - name: Gather installed package facts
   ansible.builtin.package_facts:
@@ -191,7 +191,7 @@
 
     - name: Install Docker through DietPi software catalogue
       ansible.builtin.command:
-        argv: "{{ ['/boot/dietpi/dietpi-software', 'install'] + (docker_engine_dietpi_software_ids | map('string') | list) }}"
+        argv: "{{ ['/boot/dietpi/dietpi-software', 'install'] + (docker_dietpi_software_ids | map('string') | list) }}"
       when: docker_engine_dietpi_install_required
       changed_when: true
 

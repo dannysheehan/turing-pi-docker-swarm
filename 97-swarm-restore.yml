@@ -1,6 +1,6 @@
 ---
 - name: Validate a requested encrypted Swarm restoration
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: true
   any_errors_fatal: true
   vars:
@@ -59,7 +59,7 @@
         state: stopped
 
 - name: Restore Swarm state on the administrative manager
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: true
   any_errors_fatal: true
   vars:
@@ -78,7 +78,7 @@
           ansible.builtin.shell: >-
             set -o pipefail && openssl enc -d -aes-256-cbc -pbkdf2
             -pass file:{{ swarm_restore_pass_file | quote }}
-            -in {{ hostvars['tpi-mgr-01'].swarm_restore_resolved_archive.stdout | quote }} |
+            -in {{ hostvars[swarm_primary_manager].swarm_restore_resolved_archive.stdout | quote }} |
             tar --numeric-owner --acls --xattrs -xzf - -C {{ docker_data_root | quote }}
           args:
             executable: /bin/bash
@@ -132,10 +132,10 @@
 
         - name: Report restoration rollback
           ansible.builtin.fail:
-            msg: Restoration failed and the pre-restore state was put back on tpi-mgr-01.
+            msg: Restoration failed and the pre-restore state was put back on {{ swarm_primary_manager }}.
 
 - name: Start the remaining managers after restoration
-  hosts: managers:!tpi-mgr-01
+  hosts: managers:!primary_manager
   gather_facts: false
   serial: 1
   tasks:
@@ -145,7 +145,7 @@
         state: started
 
 - name: Validate restored manager quorum
-  hosts: tpi-mgr-01
+  hosts: primary_manager
   gather_facts: false
   tasks:
     - name: Wait for all three restored managers
