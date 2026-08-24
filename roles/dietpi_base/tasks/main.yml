@@ -48,7 +48,7 @@
       {{
         dietpi_base_hosts_file.content | b64decode |
         regex_replace(
-          '(?ms)^# BEGIN ANSIBLE MANAGED CLUSTER HOSTS$.*?^# END ANSIBLE MANAGED CLUSTER HOSTS$\\n?',
+          '(?ms)^# BEGIN ANSIBLE MANAGED CLUSTER HOSTS$.*?^# END ANSIBLE MANAGED CLUSTER HOSTS$',
           ''
         )
       }}
