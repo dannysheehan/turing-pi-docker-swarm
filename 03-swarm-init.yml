@@ -234,10 +234,10 @@
       ansible.builtin.assert:
         that:
           - swarm_final_nodes.stdout_lines | length == groups['cluster'] | length
-          - swarm_final_nodes.stdout_lines | select('search', '\\|Ready\\|') | list | length == groups['cluster'] | length
-          - swarm_final_nodes.stdout_lines | select('search', '\\|(Leader|Reachable)\\|') | list | length == groups['managers'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '[|]Ready[|]') | list | length == groups['cluster'] | length
+          - swarm_final_nodes.stdout_lines | select('search', '[|](Leader|Reachable)[|]') | list | length == groups['managers'] | length
           - >-
             swarm_final_nodes.stdout_lines |
-            select('search', '\\|' ~ (docker_engine_version | regex_escape) ~ '$') |
+            select('search', '[|]' ~ (docker_engine_version | regex_escape) ~ '$') |
             list | length == groups['cluster'] | length
           - swarm_final_autolock.stdout | trim == (swarm_autolock | bool | ternary('true', 'false'))

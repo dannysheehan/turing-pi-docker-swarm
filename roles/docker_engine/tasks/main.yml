@@ -157,7 +157,7 @@
 - name: Require three healthy managers before restarting one
   ansible.builtin.assert:
     that:
-      - docker_engine_manager_states.stdout_lines | select('match', '^Ready\\|(Leader|Reachable)$') | list | length == 3
+      - docker_engine_manager_states.stdout_lines | select('match', '^Ready[|](Leader|Reachable)$') | list | length == 3
     fail_msg: Refusing Docker maintenance because all three Swarm managers are not healthy.
   when:
     - docker_engine_restart_required
