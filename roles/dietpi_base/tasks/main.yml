@@ -106,7 +106,7 @@
       {{ dietpi_base_ntp_mode.stdout | trim != dietpi_ntp_mode | string
          or dietpi_base_ntp_mirror.changed }}
 
-- name: Apply DietPi daemon-and-drift time synchronization
+- name: Delegate live time synchronization to an external daemon through DietPi
   ansible.builtin.command:
     argv:
       - /boot/dietpi/func/dietpi-set_software
@@ -115,6 +115,39 @@
   when: dietpi_base_ntp_change_required
   changed_when: true
 
+- name: Inspect whether the Chrony executable is already installed
+  ansible.builtin.stat:
+    path: /usr/sbin/chronyd
+  register: dietpi_base_chronyd_executable
+
+- name: Determine whether live Chrony checks are meaningful
+  ansible.builtin.set_fact:
+    dietpi_base_chrony_runtime_checks_available: >-
+      {{ not ansible_check_mode
+         or (dietpi_base_chronyd_executable.stat.exists
+             and not dietpi_base_ntp_change_required) }}
+
+- name: Install Chrony from the node's Debian release repository
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure Chrony as a client with multiple pool sources
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: >-
+      {{ '/usr/sbin/chronyd -p -f %s'
+         if not ansible_check_mode or dietpi_base_chronyd_executable.stat.exists
+         else omit }}
+  notify: Restart Chrony
+  when: not ansible_check_mode or dietpi_base_chronyd_executable.stat.exists
+
 - name: Enable DietPi APT update reporting without automatic upgrades
   ansible.builtin.lineinfile:
     path: /boot/dietpi.txt
@@ -122,39 +155,64 @@
     line: CONFIG_CHECK_APT_UPDATES=1
     mode: "0644"
 
-- name: Verify DietPi time synchronization service
+- name: Apply pending Chrony configuration before validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Chrony is enabled and active
   ansible.builtin.systemd_service:
-    name: systemd-timesyncd.service
+    name: chrony.service
     state: started
-  register: dietpi_base_timesync_service
+    enabled: true
+  register: dietpi_base_chrony_service
   retries: 12
   delay: 5
-  until: dietpi_base_timesync_service.status.ActiveState == 'active'
-  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+  until: dietpi_base_chrony_service.status.ActiveState == 'active'
+  when: dietpi_base_chrony_runtime_checks_available
 
-- name: Verify current clock synchronization
-  ansible.builtin.command: timedatectl show --property=NTPSynchronized --value
-  register: dietpi_base_clock_sync
+- name: Wait for Chrony to synchronize within the required clock error
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/chronyc
+      - -n
+      - waitsync
+      - "30"
+      - "{{ dietpi_base_chrony_max_correction_seconds | string }}"
+      - "{{ dietpi_base_chrony_max_skew_ppm | string }}"
+      - "2"
+  register: dietpi_base_chrony_waitsync
   changed_when: false
   check_mode: false
-  retries: 12
-  delay: 5
-  until: dietpi_base_clock_sync.stdout | trim == 'yes'
-  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+  when: dietpi_base_chrony_runtime_checks_available
 
-- name: Inspect the systemd synchronization timestamp
-  ansible.builtin.stat:
-    path: /run/systemd/timesync/synchronized
-  register: dietpi_base_sync_timestamp
-  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+- name: Inspect Chrony source selection
+  ansible.builtin.command:
+    argv: [/usr/bin/chronyc, -n, sources]
+  register: dietpi_base_chrony_sources
+  changed_when: false
+  check_mode: false
+  when: dietpi_base_chrony_runtime_checks_available
 
-- name: Require a recent successful clock synchronization
+- name: Require Chrony to have selected a network time source
   ansible.builtin.assert:
     that:
-      - dietpi_base_sync_timestamp.stat.exists
-      - ansible_facts.date_time.epoch | int - dietpi_base_sync_timestamp.stat.mtime | int < 86400
-    fail_msg: systemd-timesyncd has no successful synchronization marker from the last day.
-  when: not ansible_check_mode or not dietpi_base_ntp_change_required
+      - dietpi_base_chrony_sources.stdout is search('(?m)^\^\*')
+    fail_msg: Chrony is running but has not selected a network time source.
+  when: dietpi_base_chrony_runtime_checks_available
+
+- name: Inspect the DietPi timesyncd service state
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, is-active, systemd-timesyncd.service]
+  register: dietpi_base_timesyncd_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require the competing DietPi timesyncd daemon to remain inactive
+  ansible.builtin.assert:
+    that:
+      - dietpi_base_timesyncd_state.stdout | trim != 'active'
+    fail_msg: systemd-timesyncd is active alongside Chrony; only one time daemon may control the clock.
+  when: dietpi_base_chrony_runtime_checks_available
 
 - name: Read the live DietPi RAMlog configuration
   ansible.builtin.slurp:

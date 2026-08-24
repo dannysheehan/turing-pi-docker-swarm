@@ -21,7 +21,8 @@ DietPi owns its lifecycle and platform integration:
 - Docker's official repository, systemd override, iptables backend, cgroups,
   journald driver, and `/mnt/dietpi_userdata/docker-data` integration;
 - static `/etc/network/interfaces` configuration;
-- `systemd-timesyncd` mode 4 and DietPi RAMlog.
+- DietPi's custom time mode boundary, with Chrony as the Ansible-managed live
+  time daemon, and DietPi RAMlog.
 
 Ansible validates those invariants and owns live hostname, timezone, the
 managed cluster block in `/etc/hosts`, exact Docker engine package versions,
@@ -31,7 +32,8 @@ replaces RAMlog, deletes Swarm state, or silently demotes managers.
 
 The template at `templates/dietpi.txt.firstboot.example.j2` is only for
 imaging a replacement node. First-boot `AUTO_SETUP_*` values are not used as
-live configuration controls.
+live configuration controls. It deliberately uses DietPi time mode 4 until
+Ansible switches the live node to custom mode 0 and installs Chrony.
 
 ## Controller setup and validation
 

@@ -3,8 +3,14 @@ ansible_user: dietpi
 ansible_become: true
 
 dietpi_min_version: "10.6"
-dietpi_ntp_mode: 4
+# DietPi mode 0 delegates live time synchronization to Chrony. Replacement
+# images use mode 4 until Ansible has installed Chrony.
+dietpi_ntp_mode: 0
+dietpi_firstboot_ntp_mode: 4
 dietpi_ntp_mirror: default
+dietpi_base_chrony_pool: 2.debian.pool.ntp.org
+dietpi_base_chrony_max_correction_seconds: 0.05
+dietpi_base_chrony_max_skew_ppm: 100
 dietpi_ramlog_size_mb: 50
 dietpi_min_root_free_mb: 512
 

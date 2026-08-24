@@ -8,7 +8,9 @@ AUTO_SETUP_NET_STATIC_IP={{ ansible_host }}
 AUTO_SETUP_NET_STATIC_MASK=255.255.255.0
 AUTO_SETUP_NET_STATIC_GATEWAY={{ network_gateway }}
 AUTO_SETUP_INSTALL_SOFTWARE_ID=162 134
-CONFIG_NTP_MODE={{ dietpi_ntp_mode }}
+# Keep DietPi time synchronization active through first boot. Ansible changes
+# the live system to custom mode only after it can install and start Chrony.
+CONFIG_NTP_MODE={{ dietpi_firstboot_ntp_mode }}
 CONFIG_NTP_MIRROR={{ dietpi_ntp_mirror }}
 CONFIG_CHECK_APT_UPDATES=1
 AUTO_SETUP_RAMLOG_MAXSIZE={{ dietpi_ramlog_size_mb }}
