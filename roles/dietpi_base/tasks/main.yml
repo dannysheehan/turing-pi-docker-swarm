@@ -177,9 +177,19 @@
       - waitsync
       - "30"
       - "{{ dietpi_base_chrony_max_correction_seconds | string }}"
-      - "{{ dietpi_base_chrony_max_skew_ppm | string }}"
+      # Do not gate initial synchronization on skew. Chrony reports a large
+      # uncertainty until it has collected enough samples to estimate it.
+      - "0"
       - "2"
   register: dietpi_base_chrony_waitsync
+  changed_when: false
+  check_mode: false
+  when: dietpi_base_chrony_runtime_checks_available
+
+- name: Inspect Chrony tracking state
+  ansible.builtin.command:
+    argv: [/usr/bin/chronyc, -n, tracking]
+  register: dietpi_base_chrony_tracking
   changed_when: false
   check_mode: false
   when: dietpi_base_chrony_runtime_checks_available
@@ -192,11 +202,12 @@
   check_mode: false
   when: dietpi_base_chrony_runtime_checks_available
 
-- name: Require Chrony to have selected a network time source
+- name: Require Chrony to be synchronized to a selected network time source
   ansible.builtin.assert:
     that:
+      - dietpi_base_chrony_tracking.stdout is search('(?m)^Leap status\s*:\s*Normal$')
       - dietpi_base_chrony_sources.stdout is search('(?m)^\^\*')
-    fail_msg: Chrony is running but has not selected a network time source.
+    fail_msg: Chrony is running but has not synchronized to a selected network time source.
   when: dietpi_base_chrony_runtime_checks_available
 
 - name: Inspect the DietPi timesyncd service state
