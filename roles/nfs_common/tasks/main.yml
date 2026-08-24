@@ -39,10 +39,28 @@
       - not nfs_common_mountpoint_path.stat.exists or nfs_common_mountpoint_path.stat.isdir
     fail_msg: "{{ nfs_mount }} exists but is not a directory."
 
-- name: Remove every legacy fstab entry for the NFS mount point
+- name: Read parsed fstab entries for the NFS mount point
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/awk
+      - -v
+      - "mountpoint={{ nfs_mount }}"
+      - '$2 == mountpoint { print $1 "|" $2 "|" $3 "|" $4 "|" $5 "|" $6 }'
+      - /etc/fstab
+  register: nfs_common_fstab_entries
+  changed_when: false
+  check_mode: false
+
+- name: Calculate the canonical NFS fstab entry
+  ansible.builtin.set_fact:
+    nfs_common_canonical_fstab_entry: >-
+      {{ nfs_server }}:{{ nfs_export }}|{{ nfs_mount }}|nfs|{{ nfs_opts }}|0|0
+
+- name: Remove legacy or duplicate fstab entries for the NFS mount point
   ansible.posix.mount:
     path: "{{ nfs_mount }}"
     state: absent_from_fstab
+  when: nfs_common_fstab_entries.stdout_lines != [nfs_common_canonical_fstab_entry]
 
 - name: Install one canonical NFS automount entry
   ansible.posix.mount:
@@ -73,12 +91,31 @@
       - "'hard' in nfs_common_findmnt.stdout"
       - "'soft' not in nfs_common_findmnt.stdout"
 
-- name: Create shared backup directories
-  ansible.builtin.file:
+- name: Inspect shared backup directories
+  ansible.builtin.stat:
     path: "{{ item }}"
-    state: directory
-    mode: "0700"
   loop:
     - "{{ nfs_mount }}/backups"
     - "{{ nfs_mount }}/backups/portainer"
     - "{{ nfs_mount }}/backups/swarm"
+  register: nfs_common_backup_directories
+
+- name: Create missing shared backup directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    mode: "0700"
+  loop: "{{ nfs_common_backup_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Require existing shared backup paths to be directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir | default(false)
+    fail_msg: "{{ item.item }} exists but is not a directory."
+  loop: "{{ nfs_common_backup_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
