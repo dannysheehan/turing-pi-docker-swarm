@@ -46,13 +46,42 @@
         mode: "0600"
       no_log: true
 
+    - name: Find incomplete Swarm backup archives
+      ansible.builtin.find:
+        paths: "{{ swarm_backup_dir }}"
+        patterns: "swarm-*.tar.gz.enc.partial"
+        file_type: file
+        recurse: false
+      register: swarm_backup_incomplete_archives
+
+    - name: Remove incomplete Swarm backup archives
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ swarm_backup_incomplete_archives.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
   tasks:
     - name: Back up Swarm state while Docker is stopped
       block:
-        - name: Stop Docker on the administrative manager
+        - name: Stop Docker activation units on the administrative manager
           ansible.builtin.systemd_service:
-            name: docker.service
+            name: "{{ item }}"
             state: stopped
+          loop:
+            - docker.socket
+            - docker.service
+
+        - name: Verify Docker activation units are stopped
+          ansible.builtin.command:
+            argv: [/usr/bin/systemctl, show, --property=ActiveState, --value, "{{ item }}"]
+          loop:
+            - docker.socket
+            - docker.service
+          register: swarm_backup_stopped_units
+          changed_when: false
+          failed_when: swarm_backup_stopped_units.stdout | trim != 'inactive'
 
         - name: Encrypt the complete Swarm state directory
           ansible.builtin.shell: >-
@@ -64,6 +93,16 @@
           args:
             executable: /bin/bash
           changed_when: true
+
+        - name: Verify Docker remained stopped while the archive was created
+          ansible.builtin.command:
+            argv: [/usr/bin/systemctl, show, --property=ActiveState, --value, "{{ item }}"]
+          loop:
+            - docker.socket
+            - docker.service
+          register: swarm_backup_archive_stopped_units
+          changed_when: false
+          failed_when: swarm_backup_archive_stopped_units.stdout | trim != 'inactive'
 
         - name: Validate the encrypted Swarm archive
           ansible.builtin.shell: >-
@@ -91,10 +130,18 @@
               docker_data_root: {{ docker_data_root }}
               docker_engine_version: {{ docker_engine_version }}
       always:
-        - name: Restart Docker after Swarm backup
+        - name: Remove an unpublished partial Swarm archive
+          ansible.builtin.file:
+            path: "{{ swarm_backup_file }}.partial"
+            state: absent
+
+        - name: Restart Docker activation units after Swarm backup
           ansible.builtin.systemd_service:
-            name: docker.service
+            name: "{{ item }}"
             state: started
+          loop:
+            - docker.socket
+            - docker.service
 
         - name: Wait for Docker and Swarm readiness
           ansible.builtin.command:
