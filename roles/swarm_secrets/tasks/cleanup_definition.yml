@@ -31,3 +31,4 @@
     - >-
       swarm_secrets_old_name !=
       swarm_secrets_resolved_names[swarm_secrets_definition.name]
+    - swarm_secrets_old_name not in swarm_secrets_referenced_names.stdout_lines

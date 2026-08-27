@@ -12,3 +12,7 @@ nfs_export: /replace/with/nfs/export
 
 portainer_database_secret_reference: op://Automation/Portainer/database-key
 portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
+
+komodo_mongo_uri_secret_reference: op://Automation/Komodo/mongo-uri
+komodo_mongo_root_password_secret_reference: op://Automation/Komodo/mongo-root-password
+komodo_mongo_keyfile_secret_reference: op://Automation/Komodo/mongo-keyfile

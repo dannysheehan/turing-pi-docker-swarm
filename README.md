@@ -129,10 +129,20 @@ referenced by:
 ```yaml
 portainer_database_secret_reference: op://Automation/Portainer/database-key
 portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
+komodo_mongo_uri_secret_reference: op://Automation/Komodo/mongo-uri
+komodo_mongo_root_password_secret_reference: op://Automation/Komodo/mongo-root-password
+komodo_mongo_keyfile_secret_reference: op://Automation/Komodo/mongo-keyfile
 ```
 
 These are examples; put the real references only in the ignored
 `group_vars/all/local.yml` file.
+
+For Komodo, the URI remains in 1Password and is synchronized as the immutable
+Swarm secret `komodo_mongo_uri_<sha256-prefix>`. Komodo reads it from
+`/run/secrets/komodo_mongo_uri` through `KOMODO_DATABASE_URI_FILE`; the URI is
+not rendered into the service environment or stack file. Rotate the 1Password
+value through Ansible, verify Komodo connectivity, and retain the previous
+secret until the updated service is confirmed healthy.
 
 The resulting Swarm object is named
 `portainer_database_key_<sha256-prefix>` and labelled with its full content

@@ -5,9 +5,23 @@
       - inventory_hostname == swarm_primary_manager
       - swarm_secrets_definitions | length > 0
       - swarm_secrets_resolved_names is defined
+      - swarm_secrets_cleanup_confirm | bool
     fail_msg: >-
       Cleanup requires the synchronization result on the administrative
-      manager. Run the main swarm_secrets tasks first.
+      manager, and explicit confirmation. Run synchronization first and set
+      swarm_secrets_cleanup_confirm=true.
+
+- name: Collect secrets referenced by active Swarm services
+  ansible.builtin.shell: >-
+    set -o pipefail &&
+    /usr/bin/docker service ls --quiet |
+    /usr/bin/xargs -r /usr/bin/docker service inspect
+    --format '{{ '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}' }}{{ '{{println .SecretName}}' }}{{ '{{end}}' }}'
+  args:
+    executable: /bin/bash
+  register: swarm_secrets_referenced_names
+  changed_when: false
+  check_mode: false
 
 - name: Remove superseded managed Swarm secrets
   ansible.builtin.include_tasks: cleanup_definition.yml
