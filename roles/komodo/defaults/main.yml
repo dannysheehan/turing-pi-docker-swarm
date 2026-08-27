@@ -1,0 +1,26 @@
+---
+komodo_enabled: false
+komodo_image: ghcr.io/moghtech/komodo-core:v1.19.5@sha256:a1cceb4f971443b1e9f2a767788f663d0afb6244ee2135f7fe3fd1036af37ade
+komodo_stack_name: komodo
+komodo_stack_dir: /opt/ansible/komodo
+komodo_domain: change-me.example.com
+komodo_mongo_uri_secret_reference: ""
+komodo_mongo_uri_secret_name: komodo_mongo_uri
+komodo_mongo_uri: >-
+  {{
+    (
+      lookup('community.general.onepassword', komodo_mongo_uri_secret_reference)
+      | b64encode | b64decode
+    ) if (komodo_mongo_uri_secret_reference | length > 0) else ''
+  }}
+
+komodo_mongo_enabled: true
+komodo_mongo_image: mongo:4.4.18
+komodo_mongo_rs_name: rs0
+komodo_mongo_root_username: root
+komodo_mongo_root_password_secret_name: komodo_mongo_root_password
+komodo_mongo_keyfile_secret_name: komodo_mongo_keyfile
+komodo_mongo_root_password_secret_reference: ""
+komodo_mongo_keyfile_secret_reference: ""
+komodo_mongo_readiness_retries: 30
+komodo_mongo_readiness_delay: 4

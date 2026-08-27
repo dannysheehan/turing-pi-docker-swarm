@@ -1,0 +1,4 @@
+---
+- name: Reconcile Traefik when enabled
+  ansible.builtin.include_tasks: enabled.yml
+  when: traefik_enabled | bool

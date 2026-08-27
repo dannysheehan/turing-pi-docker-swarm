@@ -1,0 +1,83 @@
+---
+- name: Wait for Mongo replica members to reach running state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - ps
+      - "{{ komodo_stack_name }}_{{ item }}"
+      - --filter
+      - desired-state=running
+      - --format
+      - "{{ '{{.CurrentState}}' }}"
+  loop:
+    - "{{ komodo_mongo_member_hosts[0] }}"
+    - "{{ komodo_mongo_member_hosts[1] }}"
+    - "{{ komodo_mongo_member_hosts[2] }}"
+  register: komodo_mongo_member_check
+  changed_when: false
+  retries: 30
+  delay: 4
+  until: komodo_mongo_member_check.stdout is search('^Running')
+
+- name: Initialize Mongo replica set
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        cid=$(
+          /usr/bin/docker ps --format '{{ "{{.ID}} {{.Names}}" }}' \
+            | /usr/bin/awk '/^.* {{ komodo_stack_name }}_{{ komodo_mongo_member_hosts[0] }}\.1\./ {print $1; exit}'
+        )
+        if [ -z "$cid" ]; then
+          echo "mongo-1 container not found"
+          exit 1
+        fi
+        /usr/bin/docker exec "$cid" /usr/bin/bash -lc '
+          set -euo pipefail
+          rootpw=$(cat /run/secrets/mongo_root_password)
+          /usr/bin/mongo --quiet -u {{ komodo_mongo_root_username }} -p "$rootpw" --authenticationDatabase admin --eval "
+            try {
+              if (rs.status().ok !== 1) throw new Error(\"not initialized\")
+            } catch (e) {
+              rs.initiate({_id: \"{{ komodo_mongo_rs_name }}\", members: [
+                {_id: 0, host: \"{{ komodo_mongo_member_hosts[0] }}:27017\"},
+                {_id: 1, host: \"{{ komodo_mongo_member_hosts[1] }}:27017\"},
+                {_id: 2, host: \"{{ komodo_mongo_member_hosts[2] }}:27017\"}
+              ]})
+              print(\"__changed__\")
+            }
+          "
+        '
+  register: komodo_mongo_bootstrap
+  changed_when: "'__changed__' in komodo_mongo_bootstrap.stdout"
+  no_log: true
+
+- name: Wait for Mongo replica set primary and secondaries
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        cid=$(
+          /usr/bin/docker ps --format '{{ "{{.ID}} {{.Names}}" }}' \
+            | /usr/bin/awk '/^.* {{ komodo_stack_name }}_{{ komodo_mongo_member_hosts[0] }}\.1\./ {print $1; exit}'
+        )
+        rootpw=$(/usr/bin/docker exec "$cid" /usr/bin/cat /run/secrets/mongo_root_password)
+        /usr/bin/docker exec "$cid" /usr/bin/mongo --quiet \
+          -u {{ komodo_mongo_root_username }} -p "$rootpw" \
+          --authenticationDatabase admin --eval '
+            var status = rs.status();
+            var primary = status.members.filter(function (m) { return m.stateStr === "PRIMARY"; }).length;
+            var secondaries = status.members.filter(function (m) { return m.stateStr === "SECONDARY"; }).length;
+            if (primary !== 1 || secondaries !== 2) { quit(1); }
+          '
+  register: komodo_mongo_readiness
+  changed_when: false
+  failed_when: false
+  retries: "{{ komodo_mongo_readiness_retries }}"
+  delay: "{{ komodo_mongo_readiness_delay }}"
+  until: komodo_mongo_readiness.rc == 0

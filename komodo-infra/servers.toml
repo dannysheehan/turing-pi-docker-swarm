@@ -1,0 +1,69 @@
+[[server]]
+name = "tpi-mgr-01"
+description = "Swarm manager 1"
+tags = ["prod", "swarm", "manager"]
+
+[server.config]
+address = "http://192.168.1.51:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-mgr-02"
+description = "Swarm manager 2"
+tags = ["prod", "swarm", "manager"]
+
+[server.config]
+address = "http://192.168.1.52:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-mgr-03"
+description = "Swarm manager 3"
+tags = ["prod", "swarm", "manager"]
+
+[server.config]
+address = "http://192.168.1.53:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-wrk-01"
+description = "Swarm worker 1"
+tags = ["prod", "swarm", "worker"]
+
+[server.config]
+address = "http://192.168.1.54:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-wrk-02"
+description = "Swarm worker 2"
+tags = ["prod", "swarm", "worker"]
+
+[server.config]
+address = "http://192.168.1.55:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-wrk-03"
+description = "Swarm worker 3"
+tags = ["prod", "swarm", "worker"]
+
+[server.config]
+address = "http://192.168.1.56:8120"
+enabled = true
+region = "lan"
+
+[[server]]
+name = "tpi-wrk-04"
+description = "Swarm worker 4"
+tags = ["prod", "swarm", "worker"]
+
+[server.config]
+address = "http://192.168.1.57:8120"
+enabled = true
+region = "lan"

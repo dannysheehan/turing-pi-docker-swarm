@@ -77,3 +77,38 @@
       DietPi preflight failed on {{ inventory_hostname }}. If the static address
       or interface differs, correct it with dietpi-config Network Options before
       rerunning Ansible; ordinary convergence never rewrites DietPi networking.
+
+- name: Read CPU model information for Mongo compatibility gating
+  ansible.builtin.command: lscpu
+  register: dietpi_preflight_lscpu
+  changed_when: false
+  check_mode: false
+  when:
+    - komodo_enabled | default(false) | bool
+    - inventory_hostname in groups['managers']
+
+- name: Calculate Mongo compatibility facts
+  ansible.builtin.set_fact:
+    dietpi_preflight_mongo_tag: "{{ (komodo_mongo_image | default('')) | regex_replace('^.*:', '') }}"
+    dietpi_preflight_is_pi4_class: >-
+      {{ (dietpi_preflight_lscpu.stdout is search('Cortex-A72'))
+         or (dietpi_preflight_lscpu.stdout is search('BCM2711')) }}
+    dietpi_preflight_is_modern_mongo: >-
+      {{ (komodo_mongo_image | default('')) is match('^mongo:(5|6|7|8)([.].*)?$') }}
+  when:
+    - komodo_enabled | default(false) | bool
+    - inventory_hostname in groups['managers']
+
+- name: Require pinned Mongo image and guard Pi4 compatibility
+  ansible.builtin.assert:
+    that:
+      - (komodo_mongo_image | default('')) | length > 0
+      - not ((komodo_mongo_image | default('')) is search(':latest$'))
+      - not (dietpi_preflight_is_pi4_class and dietpi_preflight_is_modern_mongo)
+    fail_msg: >-
+      Mongo image compatibility check failed on {{ inventory_hostname }}.
+      Pin komodo_mongo_image to a non-latest tag and avoid official Mongo 5+ tags on
+      Pi4-class managers (Cortex-A72/BCM2711).
+  when:
+    - komodo_enabled | default(false) | bool
+    - inventory_hostname in groups['managers']

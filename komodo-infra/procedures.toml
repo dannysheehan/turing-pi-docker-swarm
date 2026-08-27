@@ -1,0 +1,17 @@
+[[procedure]]
+name = "full-redeploy"
+description = "Run build then deploy critical app stacks"
+tags = ["prod", "automation"]
+
+[[procedure.config.stage]]
+name = "Build"
+executions = [
+  { execution.type = "RunBuild", execution.params.build = "sample-app" }
+]
+
+[[procedure.config.stage]]
+name = "Deploy"
+executions = [
+  { execution.type = "DeployStack", execution.params.stack = "backend-api" },
+  { execution.type = "DeployStack", execution.params.stack = "frontend" }
+]

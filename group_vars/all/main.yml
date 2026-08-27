@@ -55,3 +55,34 @@ os_maintenance_reboot: true
 keepalived_interface: eth0
 keepalived_virtual_router_id: 51
 keepalived_auth_pass: "{{ vault_keepalived_auth_pass | default('') }}"
+
+# Traefik + Komodo (deployed by 04-services / traefik + komodo roles)
+traefik_version: "v3.5"
+traefik_stack_name: traefik
+traefik_replicas: 3
+traefik_stack_dir: /opt/ansible/traefik
+traefik_edge_network: edge
+traefik_backend_network: komodo_back
+traefik_acme_storage_dir: /mnt/dietpi_userdata/traefik
+traefik_komodo_backend_url: http://komodo-core:9120
+
+komodo_image: ghcr.io/moghtech/komodo-core:v1.19.5@sha256:a1cceb4f971443b1e9f2a767788f663d0afb6244ee2135f7fe3fd1036af37ade
+komodo_stack_name: komodo
+komodo_stack_dir: /opt/ansible/komodo
+komodo_mongo_uri: ""
+komodo_mongo_uri_secret_name: komodo_mongo_uri
+
+komodo_mongo_enabled: true
+komodo_mongo_image: mongo:4.4.18
+komodo_mongo_rs_name: rs0
+komodo_mongo_member_hosts:
+  - mongo-1
+  - mongo-2
+  - mongo-3
+komodo_mongo_root_username: root
+komodo_mongo_root_password_secret_name: komodo_mongo_root_password
+komodo_mongo_keyfile_secret_name: komodo_mongo_keyfile
+komodo_db_user: komodo_user
+komodo_db_password_secret_name: komodo_db_password
+komodo_mongo_readiness_retries: 30
+komodo_mongo_readiness_delay: 4

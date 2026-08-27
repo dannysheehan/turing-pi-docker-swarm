@@ -53,9 +53,17 @@
   roles:
     - role: keepalived
 
-- name: Reconcile Portainer Swarm services
+- name: Reconcile Traefik ingress services
+  hosts: managers
+  tags: [traefik]
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: traefik
+
+- name: Reconcile Komodo and Mongo control-plane services
   hosts: primary_manager
-  tags: [portainer]
+  tags: [komodo, mongo]
   gather_facts: true
   roles:
-    - role: portainer
+    - role: komodo

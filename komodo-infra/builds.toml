@@ -1,0 +1,25 @@
+# Optional builders/builds. Keep disabled until a build host and registry are confirmed.
+
+[[builder]]
+name = "local-builder"
+tags = ["build"]
+config.type = "Server"
+
+[builder.config.params]
+server = "tpi-mgr-01"
+
+[[build]]
+name = "sample-app"
+description = "Example build wiring"
+tags = ["prod", "app"]
+
+[build.config]
+builder = "local-builder"
+repo = "your-org/your-app"
+branch = "main"
+git_account = "your-git-account"
+image_registry.type = "Standard"
+
+[build.config.image_registry.params]
+domain = "ghcr.io"
+account = "your-org"

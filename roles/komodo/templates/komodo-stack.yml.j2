@@ -1,0 +1,196 @@
+version: "3.9"
+
+services:
+  mongo-1:
+    image: {{ komodo_mongo_image }}
+    hostname: {{ komodo_mongo_member_hosts[0] }}
+    command:
+      - --replSet
+      - {{ komodo_mongo_rs_name }}
+      - --bind_ip_all
+      - --auth
+      - --keyFile
+      - /run/secrets/mongo_keyfile
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: {{ komodo_mongo_root_username }}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          rootpw=$$(cat /run/secrets/mongo_root_password) &&
+          mongo --quiet --host 127.0.0.1 -u {{ komodo_mongo_root_username }}
+          -p "$$rootpw" --authenticationDatabase admin
+          --eval 'db.adminCommand({ping:1}).ok' | grep -q 1
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_keyfile_secret_name] | default(komodo_mongo_keyfile_secret_name) }}
+        target: mongo_keyfile
+        uid: "999"
+        gid: "999"
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}
+        target: mongo_root_password
+        uid: "999"
+        gid: "999"
+        mode: 0400
+    volumes:
+      - mongo1_data:/data/db
+    networks:
+      - komodo_back
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == tpi-mgr-01
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  mongo-2:
+    image: {{ komodo_mongo_image }}
+    hostname: {{ komodo_mongo_member_hosts[1] }}
+    command:
+      - --replSet
+      - {{ komodo_mongo_rs_name }}
+      - --bind_ip_all
+      - --auth
+      - --keyFile
+      - /run/secrets/mongo_keyfile
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: {{ komodo_mongo_root_username }}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          rootpw=$$(cat /run/secrets/mongo_root_password) &&
+          mongo --quiet --host 127.0.0.1 -u {{ komodo_mongo_root_username }}
+          -p "$$rootpw" --authenticationDatabase admin
+          --eval 'db.adminCommand({ping:1}).ok' | grep -q 1
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_keyfile_secret_name] | default(komodo_mongo_keyfile_secret_name) }}
+        target: mongo_keyfile
+        uid: "999"
+        gid: "999"
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}
+        target: mongo_root_password
+        uid: "999"
+        gid: "999"
+        mode: 0400
+    volumes:
+      - mongo2_data:/data/db
+    networks:
+      - komodo_back
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == tpi-mgr-02
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  mongo-3:
+    image: {{ komodo_mongo_image }}
+    hostname: {{ komodo_mongo_member_hosts[2] }}
+    command:
+      - --replSet
+      - {{ komodo_mongo_rs_name }}
+      - --bind_ip_all
+      - --auth
+      - --keyFile
+      - /run/secrets/mongo_keyfile
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: {{ komodo_mongo_root_username }}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          rootpw=$$(cat /run/secrets/mongo_root_password) &&
+          mongo --quiet --host 127.0.0.1 -u {{ komodo_mongo_root_username }}
+          -p "$$rootpw" --authenticationDatabase admin
+          --eval 'db.adminCommand({ping:1}).ok' | grep -q 1
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_keyfile_secret_name] | default(komodo_mongo_keyfile_secret_name) }}
+        target: mongo_keyfile
+        uid: "999"
+        gid: "999"
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}
+        target: mongo_root_password
+        uid: "999"
+        gid: "999"
+        mode: 0400
+    volumes:
+      - mongo3_data:/data/db
+    networks:
+      - komodo_back
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == tpi-mgr-03
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  komodo-core:
+    image: {{ komodo_image }}
+    environment:
+      KOMODO_DATABASE_URI_FILE: /run/secrets/komodo_mongo_uri
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_mongo_uri_secret_name] | default(komodo_mongo_uri_secret_name) }}
+        target: komodo_mongo_uri
+        mode: 0400
+    networks:
+      - edge
+      - komodo_back
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == {{ swarm_primary_manager }}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+networks:
+  edge:
+    external: true
+    name: {{ traefik_edge_network }}
+  komodo_back:
+    external: true
+    name: {{ traefik_backend_network }}
+
+volumes:
+  mongo1_data: {}
+  mongo2_data: {}
+  mongo3_data: {}
+
+secrets:
+  {{ swarm_secrets_resolved_names[komodo_mongo_uri_secret_name] | default(komodo_mongo_uri_secret_name) }}:
+    external: true
+  {{ swarm_secrets_resolved_names[komodo_mongo_keyfile_secret_name] | default(komodo_mongo_keyfile_secret_name) }}:
+    external: true
+  {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}:
+    external: true

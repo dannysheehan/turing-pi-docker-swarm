@@ -1,0 +1,22 @@
+# Non-sensitive defaults for stack interpolation.
+# Keep secrets out of Git and inject through Komodo/secret manager.
+
+[[variable]]
+name = "DOMAIN"
+value = "example.internal"
+
+[[variable]]
+name = "TRAEFIK_PUBLIC_HOST"
+value = "traefik.example.internal"
+
+[[variable]]
+name = "KOMODO_PUBLIC_HOST"
+value = "komodo.example.internal"
+
+[[variable]]
+name = "TZ"
+value = "Australia/Brisbane"
+
+[[variable]]
+name = "ENV"
+value = "prod"

@@ -1,0 +1,4 @@
+---
+- name: Reconcile Komodo when enabled
+  ansible.builtin.include_tasks: enabled.yml
+  when: komodo_enabled | bool

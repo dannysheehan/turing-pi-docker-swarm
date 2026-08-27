@@ -1,0 +1,21 @@
+# Keep core control-plane resources out of Komodo ownership during initial rollout.
+# This file is for non-critical platform add-ons only.
+
+[[stack]]
+name = "platform-addons"
+description = "Optional non-critical platform services"
+deploy = false
+tags = ["prod", "platform"]
+after = ["monitoring"]
+
+[stack.config]
+swarm = "production-swarm"
+file_paths = ["compose.yaml"]
+git_provider = "github.com"
+git_account = "your-git-account"
+repo = "your-org/platform-addons"
+branch = "main"
+environment = """
+DOMAIN = [[DOMAIN]]
+TZ = [[TZ]]
+"""

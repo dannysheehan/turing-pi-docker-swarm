@@ -1,0 +1,13 @@
+# Optional standalone deployments.
+
+[[deployment]]
+name = "sample-sidecar"
+description = "Example single-container deployment"
+deploy = false
+tags = ["prod"]
+after = ["monitoring"]
+
+[deployment.config]
+server = "tpi-wrk-01"
+image.type = "Image"
+image.params.image = "alpine:3.22"

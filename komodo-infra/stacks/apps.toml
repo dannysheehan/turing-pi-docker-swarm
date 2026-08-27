@@ -1,0 +1,38 @@
+[[stack]]
+name = "frontend"
+description = "Public frontend"
+deploy = false
+tags = ["prod", "app"]
+after = ["databases", "monitoring"]
+
+[stack.config]
+swarm = "production-swarm"
+file_paths = ["compose.yaml"]
+git_provider = "github.com"
+git_account = "your-git-account"
+repo = "your-org/frontend"
+branch = "main"
+environment = """
+DOMAIN = [[DOMAIN]]
+API_URL = https://api.[[DOMAIN]]
+TZ = [[TZ]]
+"""
+
+[[stack]]
+name = "backend-api"
+description = "Backend API services"
+deploy = false
+tags = ["prod", "app"]
+after = ["databases"]
+
+[stack.config]
+swarm = "production-swarm"
+file_paths = ["compose.yaml"]
+git_provider = "github.com"
+git_account = "your-git-account"
+repo = "your-org/backend-api"
+branch = "main"
+environment = """
+DOMAIN = [[DOMAIN]]
+TZ = [[TZ]]
+"""

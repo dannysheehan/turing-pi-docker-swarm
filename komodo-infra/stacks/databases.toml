@@ -1,0 +1,17 @@
+[[stack]]
+name = "databases"
+description = "Shared data services for applications"
+deploy = false
+tags = ["prod", "database"]
+after = ["monitoring"]
+
+[stack.config]
+swarm = "production-swarm"
+file_paths = ["compose.yaml"]
+git_provider = "github.com"
+git_account = "your-git-account"
+repo = "your-org/databases"
+branch = "main"
+environment = """
+TZ = [[TZ]]
+"""

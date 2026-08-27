@@ -1,0 +1,133 @@
+---
+- name: Normalize Komodo secret reference inputs
+  ansible.builtin.set_fact:
+    komodo_mongo_root_password_secret_reference_effective: >-
+      {{
+        komodo_mongo_root_password_secret_reference
+        | default(mongo_root_password_secret_reference | default(''), true)
+      }}
+    komodo_mongo_keyfile_secret_reference_effective: >-
+      {{
+        komodo_mongo_keyfile_secret_reference
+        | default(mongo_keyfile_secret_reference | default(''), true)
+      }}
+
+- name: Read Komodo secrets once from 1Password
+  ansible.builtin.set_fact:
+    komodo_secret_values:
+      uri: "{{ lookup('community.general.onepassword', komodo_mongo_uri_secret_reference) | b64encode | b64decode }}"
+      root_password: "{{ lookup('community.general.onepassword', komodo_mongo_root_password_secret_reference_effective) | b64encode | b64decode }}"
+      keyfile: "{{ lookup('community.general.onepassword', komodo_mongo_keyfile_secret_reference_effective) | b64encode | b64decode }}"
+  no_log: true
+
+- name: Normalize Komodo Mongo URI input
+  ansible.builtin.set_fact:
+    komodo_mongo_uri_effective: >-
+      {{
+        komodo_mongo_uri
+        | default(
+            (
+              komodo_secret_values.uri
+            ),
+            true
+          )
+      }}
+  no_log: true
+
+- name: Validate Komodo deployment inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == swarm_primary_manager
+      - komodo_domain != 'change-me.example.com'
+      - komodo_mongo_uri_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_mongo_root_password_secret_reference_effective is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_mongo_keyfile_secret_reference_effective is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_mongo_uri_effective | length > 0
+      - not (komodo_mongo_image is search(':latest$'))
+    fail_msg: >-
+      Komodo requires an explicit domain, valid op:// secret references,
+      a populated Mongo URI, and a pinned Mongo image tag.
+
+- name: Set effective Komodo Mongo URI for stack rendering
+  ansible.builtin.set_fact:
+    komodo_mongo_uri: "{{ komodo_mongo_uri_effective }}"
+  no_log: true
+
+- name: Synchronize Mongo and Komodo secrets into Swarm
+  ansible.builtin.include_role:
+    name: swarm_secrets
+  vars:
+    swarm_secrets_definitions:
+      - name: "{{ komodo_mongo_uri_secret_name }}"
+        source: "{{ komodo_mongo_uri_secret_reference }}"
+        value: "{{ komodo_secret_values.uri }}"
+        minimum_length: 20
+      - name: "{{ komodo_mongo_root_password_secret_name }}"
+        source: "{{ komodo_mongo_root_password_secret_reference_effective }}"
+        value: "{{ komodo_secret_values.root_password }}"
+        minimum_length: 20
+      - name: "{{ komodo_mongo_keyfile_secret_name }}"
+        source: "{{ komodo_mongo_keyfile_secret_reference_effective }}"
+        value: "{{ komodo_secret_values.keyfile }}"
+        minimum_length: 20
+        ascii_only: true
+
+- name: Validate Mongo keyfile characters for keyFile authentication
+  ansible.builtin.assert:
+    that:
+      - komodo_mongo_keyfile_value is match('^[A-Za-z0-9]{6,1024}$')
+    fail_msg: >-
+      Mongo keyfile must be 6-1024 characters and alphanumeric only.
+      Regenerate mongo-keyfile in 1Password without symbols or whitespace.
+  vars:
+    komodo_mongo_keyfile_value: >-
+      {{
+        komodo_secret_values.keyfile
+      }}
+  no_log: true
+
+- name: Create Komodo stack directory
+  ansible.builtin.file:
+    path: "{{ komodo_stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render Komodo stack
+  ansible.builtin.template:
+    src: komodo-stack.yml.j2
+    dest: "{{ komodo_stack_dir }}/komodo-stack.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: komodo_stack_render
+
+- name: Deploy Komodo stack  # noqa no-handler
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - deploy
+      - --prune
+      - --compose-file
+      - "{{ komodo_stack_dir }}/komodo-stack.yml"
+      - "{{ komodo_stack_name }}"
+  when: komodo_stack_render.changed
+  changed_when: komodo_stack_render.changed
+
+- name: Verify Komodo HTTP endpoint
+  ansible.builtin.uri:
+    url: "https://{{ komodo_domain }}/"
+    method: GET
+    status_code: 200
+    validate_certs: false
+  delegate_to: localhost
+  register: komodo_http_check
+  retries: 12
+  delay: 5
+  until: komodo_http_check.status == 200
+
+- name: Run Mongo replica bootstrap checks
+  ansible.builtin.include_tasks: mongo_bootstrap.yml
+  when: komodo_mongo_enabled | bool

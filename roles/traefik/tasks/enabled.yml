@@ -1,0 +1,152 @@
+---
+- name: Validate Traefik deployment inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups['managers']
+      - traefik_domain != 'change-me.example.com'
+      - traefik_acme_email | length > 3
+    fail_msg: >-
+      Traefik requires an explicit domain and ACME email, and is only
+      deployed on the configured manager set.
+
+- name: Create Traefik directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ traefik_stack_dir }}", mode: "0750" }
+    - { path: "{{ traefik_acme_storage_dir }}", mode: "0700" }
+
+- name: Ensure ACME state file exists with strict permissions
+  ansible.builtin.file:
+    path: "{{ traefik_acme_storage_dir }}/acme.json"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Inspect edge overlay network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ traefik_edge_network }}"
+      - --format
+      - "{{ '{{json .}}' }}"
+  register: traefik_edge_network_state
+  changed_when: false
+  failed_when: false
+
+- name: Validate existing edge overlay network
+  ansible.builtin.assert:
+    that:
+      - (traefik_edge_network_state.stdout | from_json).Driver == 'overlay'
+      - (traefik_edge_network_state.stdout | from_json).Scope == 'swarm'
+      - (traefik_edge_network_state.stdout | from_json).Attachable | bool
+    fail_msg: >-
+      Existing edge network {{ traefik_edge_network }} must be an attachable
+      overlay network with Swarm scope.
+  when: traefik_edge_network_state.rc == 0
+
+- name: Create edge overlay network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - create
+      - --driver
+      - overlay
+      - --attachable
+      - "{{ traefik_edge_network }}"
+  when: traefik_edge_network_state.rc != 0
+  changed_when: true
+
+- name: Inspect backend overlay network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - inspect
+      - "{{ traefik_backend_network }}"
+      - --format
+      - "{{ '{{json .}}' }}"
+  register: traefik_backend_network_state
+  changed_when: false
+  failed_when: false
+
+- name: Validate existing encrypted backend overlay network
+  ansible.builtin.assert:
+    that:
+      - (traefik_backend_network_state.stdout | from_json).Driver == 'overlay'
+      - (traefik_backend_network_state.stdout | from_json).Scope == 'swarm'
+      - (traefik_backend_network_state.stdout | from_json).Attachable | bool
+      - ((traefik_backend_network_state.stdout | from_json).Options.encrypted | default('false')) == 'true'
+    fail_msg: >-
+      Existing backend network {{ traefik_backend_network }} must be an
+      attachable encrypted overlay network with Swarm scope.
+  when: traefik_backend_network_state.rc == 0
+
+- name: Create encrypted backend overlay network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - network
+      - create
+      - --driver
+      - overlay
+      - --attachable
+      - --opt
+      - encrypted=true
+      - "{{ traefik_backend_network }}"
+  when: traefik_backend_network_state.rc != 0
+  changed_when: true
+
+- name: Render Traefik stack
+  ansible.builtin.template:
+    src: traefik-stack.yml.j2
+    dest: "{{ traefik_stack_dir }}/traefik-stack.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: traefik_stack_render
+
+- name: Render Traefik dynamic routes
+  ansible.builtin.template:
+    src: traefik-dynamic.yml.j2
+    dest: "{{ traefik_stack_dir }}/dynamic.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: traefik_dynamic_render
+
+- name: Deploy Traefik stack  # noqa no-handler
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - deploy
+      - --prune
+      - --compose-file
+      - "{{ traefik_stack_dir }}/traefik-stack.yml"
+      - "{{ traefik_stack_name }}"
+  when:
+    - inventory_hostname == swarm_primary_manager
+    - traefik_stack_render.changed or traefik_dynamic_render.changed
+  changed_when: traefik_stack_render.changed or traefik_dynamic_render.changed
+
+- name: Verify Traefik ping endpoint
+  ansible.builtin.uri:
+    url: "https://{{ traefik_domain }}/ping"
+    method: GET
+    status_code: 200
+    validate_certs: false
+  delegate_to: localhost
+  run_once: true
+  register: traefik_ping_check
+  retries: 12
+  delay: 5
+  until: traefik_ping_check.status == 200
