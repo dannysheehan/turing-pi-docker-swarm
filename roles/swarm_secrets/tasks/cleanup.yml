@@ -1,12 +1,13 @@
 ---
 - name: Validate Swarm secret cleanup inputs
   ansible.builtin.assert:
+    # Cleanup is intentionally opt-in because Swarm secrets are immutable.
     that:
       - inventory_hostname == swarm_primary_manager
       - swarm_secrets_definitions | length > 0
       - swarm_secrets_resolved_names is defined
-      - swarm_secrets_cleanup_confirm | bool
-    fail_msg: >-
+      - swarm_secrets_cleanup_confirm | bool  # pragma: allowlist secret
+    fail_msg: >-  # pragma: allowlist secret
       Cleanup requires the synchronization result on the administrative
       manager, and explicit confirmation. Run synchronization first and set
       swarm_secrets_cleanup_confirm=true.

@@ -176,7 +176,7 @@ services:
 
 networks:
   edge:
-    external: true
+    external: true  # pragma: allowlist secret
     name: {{ traefik_edge_network }}
   komodo_back:
     external: true
@@ -189,8 +189,8 @@ volumes:
 
 secrets:
   {{ swarm_secrets_resolved_names[komodo_mongo_uri_secret_name] | default(komodo_mongo_uri_secret_name) }}:
-    external: true
+    external: true  # pragma: allowlist secret
   {{ swarm_secrets_resolved_names[komodo_mongo_keyfile_secret_name] | default(komodo_mongo_keyfile_secret_name) }}:
-    external: true
-  {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}:
-    external: true
+    external: true  # pragma: allowlist secret
+  {{ swarm_secrets_resolved_names[komodo_mongo_root_password_secret_name] | default(komodo_mongo_root_password_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret

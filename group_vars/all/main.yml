@@ -70,7 +70,7 @@ komodo_image: ghcr.io/moghtech/komodo-core:v1.19.5@sha256:a1cceb4f971443b1e9f2a7
 komodo_stack_name: komodo
 komodo_stack_dir: /opt/ansible/komodo
 komodo_mongo_uri: ""
-komodo_mongo_uri_secret_name: komodo_mongo_uri
+komodo_mongo_uri_secret_name: komodo_mongo_uri  # pragma: allowlist secret
 
 komodo_mongo_enabled: true
 komodo_mongo_image: mongo:4.4.18
@@ -80,9 +80,9 @@ komodo_mongo_member_hosts:
   - mongo-2
   - mongo-3
 komodo_mongo_root_username: root
-komodo_mongo_root_password_secret_name: komodo_mongo_root_password
-komodo_mongo_keyfile_secret_name: komodo_mongo_keyfile
+komodo_mongo_root_password_secret_name: komodo_mongo_root_password  # pragma: allowlist secret
+komodo_mongo_keyfile_secret_name: komodo_mongo_keyfile  # pragma: allowlist secret
 komodo_db_user: komodo_user
-komodo_db_password_secret_name: komodo_db_password
+komodo_db_password_secret_name: komodo_db_password  # pragma: allowlist secret
 komodo_mongo_readiness_retries: 30
 komodo_mongo_readiness_delay: 4
