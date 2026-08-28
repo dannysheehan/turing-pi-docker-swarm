@@ -61,9 +61,135 @@
   roles:
     - role: traefik
 
-- name: Reconcile Komodo and Mongo control-plane services
+- name: Reconcile Komodo and database control-plane services
   hosts: primary_manager
-  tags: [komodo, mongo]
+  tags: [komodo, database]
   gather_facts: true
   roles:
     - role: komodo
+
+- name: Verify Komodo is reachable before Periphery enrollment
+  hosts: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  gather_facts: false
+  tags: [komodo, database, periphery, onboarding]
+  tasks:
+    - name: Verify Komodo HTTP endpoint
+      ansible.builtin.uri:
+        url: "https://{{ komodo_domain }}/"
+        method: GET
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | default(true) | bool }}"
+      register: komodo_http_check
+      retries: 60
+      delay: 5
+      until: komodo_http_check.status == 200
+      when: komodo_enabled | bool
+
+- name: Prepare short-lived Komodo Periphery enrollment
+  hosts: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+    komodo_onboarding_phase: prepare
+  gather_facts: true
+  tags: [komodo, periphery, onboarding]
+  roles:
+    - role: komodo_onboarding
+
+- name: Reconcile outbound Komodo Periphery agents
+  hosts: cluster
+  tags: [komodo, periphery, onboarding]
+  gather_facts: true
+  serial: 1
+  vars:
+    komodo_periphery_onboarding_key: >-
+      {{
+        (hostvars['localhost'].komodo_onboarding_private_key | default(''))
+        if inventory_hostname in
+           (hostvars['localhost'].komodo_onboarding_target_servers | default([]))
+        else ''
+      }}
+  tasks:
+    - name: Enroll Periphery and remove its transient credential
+      block:
+        - name: Install and start outbound Komodo Periphery
+          ansible.builtin.include_role:
+            name: komodo_periphery
+
+        - name: Apply the onboarding configuration before verification
+          ansible.builtin.meta: flush_handlers
+
+        - name: Wait for this Periphery connection in Komodo
+          ansible.builtin.uri:
+            url: "{{ komodo_host | regex_replace('/+$', '') }}/read/GetServerState"
+            method: POST
+            headers: "{{ hostvars['localhost'].komodo_onboarding_headers }}"
+            body_format: json
+            body:
+              server: "{{ inventory_hostname }}"
+            return_content: true
+            status_code: 200
+            validate_certs: "{{ komodo_onboarding_validate_certs | default(true) | bool }}"
+          delegate_to: localhost
+          # `become: false` alone is not enough: the connection variable
+          # ansible_become (true for the cluster from group_vars) takes
+          # precedence over the keyword, so the delegated task would try to
+          # sudo on the Ansible controller and fail asking for a password.
+          become: false
+          vars:
+            ansible_become: false
+          register: komodo_periphery_api_state
+          retries: "{{ komodo_onboarding_server_retries | default(30) }}"
+          delay: "{{ komodo_onboarding_server_delay | default(4) }}"
+          until: >-
+            komodo_periphery_api_state.status == 200 and
+            komodo_periphery_api_state.json.status | default('') == 'Ok'
+          when: komodo_onboarding_enabled | bool
+          no_log: true
+      always:
+        - name: Remove the onboarding key from Periphery configuration
+          ansible.builtin.include_role:
+            name: komodo_periphery
+          vars:
+            komodo_periphery_onboarding_key: ""
+
+        - name: Apply the credential-free Periphery configuration
+          ansible.builtin.meta: flush_handlers
+
+- name: Verify Periphery enrollment and reconcile the Komodo Swarm
+  hosts: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+    komodo_onboarding_phase: finalize
+  gather_facts: false
+  tags: [komodo, periphery, onboarding]
+  roles:
+    - role: komodo_onboarding
+
+- name: Verify Traefik after service reconciliation
+  hosts: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  gather_facts: false
+  tags: [traefik, komodo]
+  tasks:
+    - name: Verify Traefik ping endpoint
+      ansible.builtin.uri:
+        url: "https://{{ traefik_domain }}/ping"
+        method: GET
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | default(true) | bool }}"
+      register: traefik_ping_check
+      retries: 12
+      delay: 5
+      until: traefik_ping_check.status == 200
+      when: traefik_enabled | bool

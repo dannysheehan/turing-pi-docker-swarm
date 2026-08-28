@@ -1,0 +1,152 @@
+---
+- name: Validate Komodo onboarding inputs
+  ansible.builtin.assert:
+    that:
+      - groups['cluster'] | length > 0
+      - groups['managers'] | length > 0
+      - komodo_host is match('^https://[^/]+')
+      - >-
+        (komodo_onboarding_api_key_secret_reference | length == 0 and
+         komodo_onboarding_api_secret_secret_reference | length == 0) or
+        (komodo_onboarding_api_key_secret_reference is match('^op://[^/]+/[^/]+/.+$') and
+         komodo_onboarding_api_secret_secret_reference is match('^op://[^/]+/[^/]+/.+$'))
+      - >-
+        komodo_onboarding_api_key_secret_reference | length > 0 or
+        (komodo_admin_username_secret_reference is match('^op://[^/]+/[^/]+/.+$') and
+         komodo_admin_password_secret_reference is match('^op://[^/]+/[^/]+/.+$'))
+      - komodo_onboarding_expiry_minutes | int >= 5
+      - komodo_onboarding_expiry_minutes | int <= 1440
+      - komodo_onboarding_rekey_servers | difference(groups['cluster']) | length == 0
+      - komodo_onboarding_rekey_servers | length == 0 or komodo_onboarding_rekey_confirm | bool
+    fail_msg: >-
+      Komodo onboarding requires valid inventory and administrator secret
+      references. Privileged re-keying additionally requires every target to
+      be in the cluster inventory and komodo_onboarding_rekey_confirm=true.
+
+- name: Authenticate the Komodo bootstrap session
+  ansible.builtin.include_tasks: authenticate.yml
+
+- name: List existing Komodo Server resources
+  ansible.builtin.uri:
+    url: "{{ komodo_host | regex_replace('/+$', '') }}/read/ListServers"
+    method: POST
+    headers: "{{ komodo_onboarding_headers }}"
+    body_format: json
+    body:
+      limit: 0
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+  register: komodo_onboarding_servers
+  no_log: true
+
+- name: Calculate the Periphery enrollment set
+  ansible.builtin.set_fact:
+    komodo_onboarding_existing_servers: >-
+      {{ komodo_onboarding_servers.json | map(attribute='name') | list }}
+    komodo_onboarding_missing_servers: >-
+      {{ groups['cluster'] | difference(
+           komodo_onboarding_servers.json | map(attribute='name') | list
+         ) }}
+    komodo_onboarding_inbound_servers: >-
+      {{ komodo_onboarding_servers.json
+         | selectattr('info.address', 'defined')
+         | rejectattr('info.address', 'none')
+         | map(attribute='name')
+         | list
+         | intersect(groups['cluster'])
+         | list }}
+  no_log: true
+
+- name: Convert existing cluster Server resources to outbound mode
+  ansible.builtin.uri:
+    url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateServer"
+    method: POST
+    headers: "{{ komodo_onboarding_headers }}"
+    body_format: json
+    body:
+      id: "{{ item }}"
+      config:
+        address: ""
+    status_code: 200
+    validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+  loop: "{{ komodo_onboarding_inbound_servers }}"
+  no_log: true
+
+- name: Set the hosts which require an onboarding credential
+  ansible.builtin.set_fact:
+    komodo_onboarding_target_servers: >-
+      {{ (komodo_onboarding_missing_servers + komodo_onboarding_rekey_servers)
+         | unique | list }}
+    komodo_onboarding_private_key: ""
+    komodo_onboarding_public_key: ""
+  no_log: true
+
+# A run that fails between key creation and finalize never reaches the always
+# block that disables the key, leaving an enabled credential behind until its
+# natural expiry. Sweep any of our own leftovers before minting a new one.
+- name: List existing Komodo onboarding keys
+  ansible.builtin.uri:
+    url: "{{ komodo_host | regex_replace('/+$', '') }}/read/ListOnboardingKeys"
+    method: POST
+    headers: "{{ komodo_onboarding_headers }}"
+    body_format: json
+    body: {}
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+  register: komodo_onboarding_existing_keys
+  no_log: true
+
+- name: Revoke stale Ansible-created onboarding keys
+  ansible.builtin.uri:
+    url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateOnboardingKey"
+    method: POST
+    headers: "{{ komodo_onboarding_headers }}"
+    body_format: json
+    body:
+      public_key: "{{ item }}"
+      enabled: false
+    status_code: 200
+    validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+  loop: >-
+    {{
+      komodo_onboarding_existing_keys.json
+      | selectattr('name', 'defined')
+      | selectattr('name', 'match', '^' ~ komodo_onboarding_key_name ~ '-')
+      | selectattr('enabled', 'defined')
+      | selectattr('enabled')
+      | map(attribute='public_key')
+      | list
+    }}
+  no_log: true
+
+- name: Create a short-lived Komodo onboarding key
+  ansible.builtin.uri:
+    url: "{{ komodo_host | regex_replace('/+$', '') }}/write/CreateOnboardingKey"
+    method: POST
+    headers: "{{ komodo_onboarding_headers }}"
+    body_format: json
+    body:
+      name: "{{ komodo_onboarding_key_name }}-{{ ansible_facts.date_time.epoch }}"
+      expires: >-
+        {{ ((ansible_facts.date_time.epoch | int)
+             + (komodo_onboarding_expiry_minutes | int * 60)) * 1000 }}
+      private_key: null
+      tags: "{{ komodo_onboarding_tags }}"
+      privileged: "{{ komodo_onboarding_rekey_servers | length > 0 }}"
+      copy_server: ""
+      create_builder: false
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+  register: komodo_onboarding_key_create
+  when: komodo_onboarding_target_servers | length > 0
+  no_log: true
+
+- name: Retain the ephemeral onboarding key for the Periphery play
+  ansible.builtin.set_fact:
+    komodo_onboarding_private_key: "{{ komodo_onboarding_key_create.json.private_key }}"
+    komodo_onboarding_public_key: "{{ komodo_onboarding_key_create.json.created.public_key }}"
+  when: komodo_onboarding_target_servers | length > 0
+  no_log: true

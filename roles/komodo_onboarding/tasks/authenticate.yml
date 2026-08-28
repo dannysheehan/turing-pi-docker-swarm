@@ -1,0 +1,71 @@
+---
+- name: Select the Komodo bootstrap authentication method
+  ansible.builtin.set_fact:
+    komodo_onboarding_use_api_key: >-
+      {{ komodo_onboarding_api_key_secret_reference | length > 0 }}
+  no_log: true
+
+- name: Read the Komodo administrator API key
+  ansible.builtin.set_fact:
+    komodo_onboarding_headers:
+      X-Api-Key: >-
+        {{ lookup('community.general.onepassword', komodo_onboarding_api_key_secret_reference)
+           | b64encode | b64decode }}
+      X-Api-Secret: >-
+        {{ lookup('community.general.onepassword', komodo_onboarding_api_secret_secret_reference)
+           | b64encode | b64decode }}
+  when: komodo_onboarding_use_api_key | bool
+  no_log: true
+
+- name: Authenticate with the initialization administrator
+  when: not (komodo_onboarding_use_api_key | bool)
+  block:
+    - name: Read Komodo bootstrap administrator credentials
+      ansible.builtin.set_fact:
+        komodo_onboarding_admin_username: >-
+          {{ lookup('community.general.onepassword', komodo_admin_username_secret_reference)
+             | b64encode | b64decode }}
+        komodo_onboarding_admin_password: >-
+          {{ lookup('community.general.onepassword', komodo_admin_password_secret_reference)
+             | b64encode | b64decode }}
+      no_log: true
+
+    - name: Log in to the Komodo API
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/auth/login/LoginLocalUser"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ komodo_onboarding_admin_username }}"
+          password: "{{ komodo_onboarding_admin_password }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      register: komodo_onboarding_login
+      no_log: true
+
+    - name: Require direct administrator authentication
+      ansible.builtin.assert:
+        that:
+          - komodo_onboarding_login.json.type | default('') == 'Jwt'
+          - komodo_onboarding_login.json.data.jwt | default('') | length > 0
+        fail_msg: >-
+          Komodo did not return a JWT. A 'Totp' or 'Passkey' response means
+          two-factor authentication is enrolled for this administrator.
+          Configure the administrator API key references for unattended
+          onboarding instead.
+      no_log: true
+
+    - name: Retain the temporary Komodo API token for this playbook run
+      ansible.builtin.set_fact:
+        komodo_onboarding_headers:
+          Authorization: "{{ komodo_onboarding_login.json.data.jwt }}"
+      no_log: true
+
+- name: Require usable Komodo API headers
+  ansible.builtin.assert:
+    that:
+      - komodo_onboarding_headers is defined
+      - komodo_onboarding_headers | length > 0
+    fail_msg: Komodo bootstrap authentication did not produce API headers.
+  no_log: true

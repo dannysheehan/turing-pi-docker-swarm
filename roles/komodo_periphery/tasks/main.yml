@@ -1,0 +1,4 @@
+---
+- name: Reconcile Komodo Periphery when enabled
+  ansible.builtin.include_tasks: enabled.yml
+  when: komodo_periphery_enabled | bool

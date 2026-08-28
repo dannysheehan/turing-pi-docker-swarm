@@ -1,0 +1,6 @@
+---
+- name: Restart Komodo Periphery
+  ansible.builtin.systemd_service:
+    name: periphery.service
+    state: restarted
+    daemon_reload: true

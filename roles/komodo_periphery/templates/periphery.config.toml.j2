@@ -1,0 +1,26 @@
+# Managed by Ansible. Periphery generates and retains its private key below
+# root_directory after the first successful Core connection.
+root_directory = {{ komodo_periphery_root_directory | to_json }}
+disable_terminals = {{ komodo_periphery_disable_terminals | lower }}
+disable_container_exec = {{ komodo_periphery_disable_container_exec | lower }}
+{% if komodo_periphery_outbound | bool %}
+core_address = {{ komodo_periphery_core_address | to_json }}
+connect_as = {{ komodo_periphery_connect_as | to_json }}
+{% if komodo_periphery_core_tls_insecure_skip_verify | bool %}
+# Periphery validates the Core certificate itself, independently of any
+# Ansible-side check. While Traefik serves its self-signed default cert the
+# outbound websocket is refused with "invalid peer certificate: UnknownIssuer",
+# so enrollment cannot complete. Set back to false once Core presents a
+# trusted certificate.
+core_tls_insecure_skip_verify = true
+{% endif %}
+{% if komodo_periphery_onboarding_key | length > 0 %}
+onboarding_key = {{ komodo_periphery_onboarding_key | to_json }}
+{% endif %}
+server_enabled = false
+{% else %}
+port = {{ komodo_periphery_port }}
+bind_ip = {{ komodo_periphery_bind_ip | to_json }}
+allowed_ips = ["{{ admin_cidr }}"]
+ssl_enabled = {{ komodo_periphery_ssl_enabled | lower }}
+{% endif %}

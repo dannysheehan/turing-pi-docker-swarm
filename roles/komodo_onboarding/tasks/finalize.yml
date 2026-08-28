@@ -1,0 +1,175 @@
+---
+- name: Require a prepared Komodo onboarding session
+  ansible.builtin.assert:
+    that:
+      - komodo_onboarding_headers is defined
+      - komodo_onboarding_target_servers is defined
+      - komodo_onboarding_public_key is defined
+    fail_msg: Run the prepare phase before finalizing Komodo onboarding.
+  no_log: true
+
+- name: Verify and reconcile the onboarded Swarm
+  block:
+    - name: Wait for every Periphery connection to become healthy
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/read/GetServerState"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          server: "{{ item }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      loop: "{{ groups['cluster'] }}"
+      register: komodo_onboarding_server_states
+      retries: "{{ komodo_onboarding_server_retries }}"
+      delay: "{{ komodo_onboarding_server_delay }}"
+      until: >-
+        komodo_onboarding_server_states.status == 200 and
+        komodo_onboarding_server_states.json.status | default('') == 'Ok'
+      no_log: true
+
+    - name: List existing Komodo Swarm resources
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/read/ListSwarms"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          limit: 0
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      register: komodo_onboarding_swarms
+      no_log: true
+
+    - name: Reconcile foundational Komodo Server configuration
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateServer"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          id: "{{ item }}"
+          config:
+            address: ""
+            enabled: true
+            region: lan
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      loop: "{{ groups['cluster'] }}"
+      no_log: true
+
+    - name: Reconcile foundational Komodo Server metadata
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateResourceMeta"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          target:
+            type: Server
+            id: "{{ item }}"
+          description: >-
+            Swarm {{ 'manager' if item in groups['managers'] else 'worker' }}
+            {{ groups['managers'].index(item) + 1
+               if item in groups['managers']
+               else groups['workers'].index(item) + 1 }}
+          template: false
+          tags:
+            - prod
+            - swarm
+            - "{{ 'manager' if item in groups['managers'] else 'worker' }}"
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      loop: "{{ groups['cluster'] }}"
+      no_log: true
+
+    - name: Reconcile the Komodo Swarm resource
+      ansible.builtin.uri:
+        url: >-
+          {{ komodo_host | regex_replace('/+$', '') }}/write/{% if
+             komodo_onboarding_swarm_name in
+             (komodo_onboarding_swarms.json | map(attribute='name') | list)
+             %}UpdateSwarm{% else %}CreateSwarm{% endif %}
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'id': komodo_onboarding_swarm_name,
+              'config': {
+                'server_ids': groups['managers'],
+                'send_unhealthy_alerts': komodo_onboarding_swarm_send_unhealthy_alerts | bool
+              }
+            }
+            if komodo_onboarding_swarm_name in
+               (komodo_onboarding_swarms.json | map(attribute='name') | list)
+            else
+            {
+              'name': komodo_onboarding_swarm_name,
+              'config': {
+                'server_ids': groups['managers'],
+                'send_unhealthy_alerts': komodo_onboarding_swarm_send_unhealthy_alerts | bool
+              }
+            }
+          }}
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      register: komodo_onboarding_swarm_reconcile
+      no_log: true
+
+    - name: Reconcile foundational Komodo Swarm metadata
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateResourceMeta"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          target:
+            type: Swarm
+            id: "{{ komodo_onboarding_swarm_name }}"
+          description: Turing Pi production swarm
+          template: false
+          tags:
+            - prod
+            - swarm
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      no_log: true
+
+    - name: Wait for Komodo to discover every Docker Swarm node
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/read/ListSwarmNodes"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          swarm: "{{ komodo_onboarding_swarm_name }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      register: komodo_onboarding_swarm_nodes
+      retries: "{{ komodo_onboarding_swarm_retries }}"
+      delay: "{{ komodo_onboarding_swarm_delay }}"
+      until: >-
+        (komodo_onboarding_swarm_nodes.json | length) ==
+        (groups['cluster'] | length)
+      no_log: true
+  always:
+    - name: Disable the ephemeral Komodo onboarding key
+      ansible.builtin.uri:
+        url: "{{ komodo_host | regex_replace('/+$', '') }}/write/UpdateOnboardingKey"
+        method: POST
+        headers: "{{ komodo_onboarding_headers }}"
+        body_format: json
+        body:
+          public_key: "{{ komodo_onboarding_public_key }}"
+          enabled: false
+        status_code: 200
+        validate_certs: "{{ komodo_onboarding_validate_certs | bool }}"
+      when: komodo_onboarding_public_key | length > 0
+      no_log: true

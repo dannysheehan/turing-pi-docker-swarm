@@ -137,16 +137,3 @@
     - inventory_hostname == swarm_primary_manager
     - traefik_stack_render.changed or traefik_dynamic_render.changed
   changed_when: traefik_stack_render.changed or traefik_dynamic_render.changed
-
-- name: Verify Traefik ping endpoint
-  ansible.builtin.uri:
-    url: "https://{{ traefik_domain }}/ping"
-    method: GET
-    status_code: 200
-    validate_certs: false
-  delegate_to: localhost
-  run_once: true
-  register: traefik_ping_check
-  retries: 12
-  delay: 5
-  until: traefik_ping_check.status == 200
