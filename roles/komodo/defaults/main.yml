@@ -1,26 +1,55 @@
 ---
 komodo_enabled: false
-komodo_image: ghcr.io/moghtech/komodo-core:v1.19.5@sha256:a1cceb4f971443b1e9f2a767788f663d0afb6244ee2135f7fe3fd1036af37ade
+komodo_image: ghcr.io/moghtech/komodo-core:2.3.2@sha256:7ae1d1547b16f1fd88902050105d80bbefc41b3023baf1f6dbc2b8df47ecb526
 komodo_stack_name: komodo
 komodo_stack_dir: /opt/ansible/komodo
 komodo_domain: change-me.example.com
-komodo_mongo_uri_secret_reference: ""
-komodo_mongo_uri_secret_name: komodo_mongo_uri  # pragma: allowlist secret
-komodo_mongo_uri: >-
+komodo_host: "https://{{ komodo_domain }}"
+komodo_local_auth: true
+komodo_disable_user_registration: true
+komodo_admin_username_secret_name: komodo_admin_username  # pragma: allowlist secret
+komodo_admin_password_secret_name: komodo_admin_password  # pragma: allowlist secret
+komodo_jwt_secret_name: komodo_jwt_secret  # pragma: allowlist secret
+komodo_config_dir: /mnt/dietpi_userdata/komodo-config
+komodo_admin_username_secret_reference: ""
+komodo_admin_password_secret_reference: ""
+komodo_jwt_secret_reference: ""
+
+# Database tier: FerretDB v2 (MongoDB wire protocol) over Postgres + DocumentDB.
+#
+# Stock MongoDB 5.0+ requires ARMv8.2-A with LSE atomics. The Cortex-A53 in a
+# CM3+ implements ARMv8-A only, so MongoDB is permanently capped at the
+# end-of-life 4.4 series here. FerretDB is the upstream-documented alternative
+# for hosts that cannot run current MongoDB.
+#
+# Keep the two images version-matched: the postgres-documentdb tag names the
+# FerretDB release it pairs with. Upstream warns that updates can be breaking.
+komodo_pg_image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0@sha256:2386795ec2aa7ae559304361979f1dc5708d383ee9020ae63dadc2940dfe58f7
+komodo_ferretdb_image: ghcr.io/ferretdb/ferretdb:2.7.0@sha256:5706414241eb84f0515512c37b46db0f1b1eac9e5ceb7e4c2523211c184b1985
+komodo_pg_data_dir: /mnt/dietpi_userdata/komodo-postgres
+# The FerretDB image is distroless and runs as ferretdb:ferretdb (uid/gid 1000).
+# The Postgres image runs as postgres (uid/gid 999); PGDATA must stay
+# owned by it or the server cannot traverse its own data directory.
+komodo_pg_uid: 999
+komodo_pg_gid: 999
+komodo_ferretdb_uid: 1000
+komodo_ferretdb_gid: 1000
+komodo_db_user: komodo_user
+komodo_database_db_name: komodo
+
+komodo_pg_password_secret_name: komodo_pg_password  # pragma: allowlist secret
+komodo_pg_password_secret_reference: ""
+komodo_ferretdb_url_secret_name: komodo_ferretdb_url  # pragma: allowlist secret
+
+komodo_pg_password: >-
   {{
     (
-      lookup('community.general.onepassword', komodo_mongo_uri_secret_reference)
+      lookup('community.general.onepassword', komodo_pg_password_secret_reference)
       | b64encode | b64decode
-    ) if (komodo_mongo_uri_secret_reference | length > 0) else ''
+    ) if (komodo_pg_password_secret_reference | length > 0) else ''
   }}
 
-komodo_mongo_enabled: true
-komodo_mongo_image: mongo:4.4.18
-komodo_mongo_rs_name: rs0
-komodo_mongo_root_username: root
-komodo_mongo_root_password_secret_name: komodo_mongo_root_password  # pragma: allowlist secret
-komodo_mongo_keyfile_secret_name: komodo_mongo_keyfile  # pragma: allowlist secret
-komodo_mongo_root_password_secret_reference: ""
-komodo_mongo_keyfile_secret_reference: ""
-komodo_mongo_readiness_retries: 30
-komodo_mongo_readiness_delay: 4
+# Sized for a cold pull of the ~479MB Postgres image plus first-time
+# DocumentDB install on a CM3+: 120 x 5s = 10 minutes.
+komodo_db_readiness_retries: 120
+komodo_db_readiness_delay: 5

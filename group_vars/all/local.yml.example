@@ -13,6 +13,19 @@ nfs_export: /replace/with/nfs/export
 portainer_database_secret_reference: op://Automation/Portainer/database-key
 portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
 
-komodo_mongo_uri_secret_reference: op://Automation/Komodo/mongo-uri
-komodo_mongo_root_password_secret_reference: op://Automation/Komodo/mongo-root-password
-komodo_mongo_keyfile_secret_reference: op://Automation/Komodo/mongo-keyfile
+# Public hostnames served by Traefik. komodo_host is derived from komodo_domain.
+traefik_domain: traefik.home.example.com
+komodo_domain: komodo.home.example.com
+traefik_acme_email: admin@example.com
+
+# Komodo database (FerretDB over Postgres). The password is embedded verbatim
+# in the FerretDB postgres:// URL, so it must be 20-128 alphanumeric characters
+# with no symbols or whitespace.
+komodo_pg_password_secret_reference: op://Turing-Pi/Komodo/postgres-password
+komodo_admin_username_secret_reference: op://Turing-Pi/Komodo/admin-username
+komodo_admin_password_secret_reference: op://Turing-Pi/Komodo/admin-password
+komodo_jwt_secret_reference: op://Turing-Pi/Komodo/jwt-secret
+# Optional after enabling 2FA for the initialization administrator. Both
+# references must be configured together and belong to an administrator key.
+komodo_onboarding_api_key_secret_reference: ""
+komodo_onboarding_api_secret_secret_reference: ""

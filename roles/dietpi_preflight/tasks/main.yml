@@ -78,37 +78,44 @@
       or interface differs, correct it with dietpi-config Network Options before
       rerunning Ansible; ordinary convergence never rewrites DietPi networking.
 
-- name: Read CPU model information for Mongo compatibility gating
-  ansible.builtin.command: lscpu
-  register: dietpi_preflight_lscpu
+# MongoDB 5.0 and later require ARMv8.2-A with LSE atomics. Testing for the
+# 'atomics' CPU flag is the real requirement; matching on core names is not,
+# because it silently misses every pre-A72 part. A Cortex-A53 (CM3+) is older
+# than a Cortex-A72 and equally unable to run modern MongoDB, so a Pi4-only
+# check would pass on hardware that cannot run the image at all.
+#
+# The stack uses FerretDB over Postgres and imposes no such requirement. This
+# guard exists to stop a stock MongoDB image being reintroduced on a host that
+# cannot execute it.
+- name: Read CPU atomics support for database compatibility gating
+  ansible.builtin.command: grep -c '\batomics\b' /proc/cpuinfo
+  register: dietpi_preflight_atomics
   changed_when: false
+  failed_when: false
   check_mode: false
   when:
     - komodo_enabled | default(false) | bool
     - inventory_hostname in groups['managers']
 
-- name: Calculate Mongo compatibility facts
+- name: Calculate database compatibility facts
   ansible.builtin.set_fact:
-    dietpi_preflight_mongo_tag: "{{ (komodo_mongo_image | default('')) | regex_replace('^.*:', '') }}"
-    dietpi_preflight_is_pi4_class: >-
-      {{ (dietpi_preflight_lscpu.stdout is search('Cortex-A72'))
-         or (dietpi_preflight_lscpu.stdout is search('BCM2711')) }}
+    dietpi_preflight_has_lse_atomics: >-
+      {{ (dietpi_preflight_atomics.stdout | default('0') | int) > 0 }}
     dietpi_preflight_is_modern_mongo: >-
       {{ (komodo_mongo_image | default('')) is match('^mongo:(5|6|7|8)([.].*)?$') }}
   when:
     - komodo_enabled | default(false) | bool
     - inventory_hostname in groups['managers']
 
-- name: Require pinned Mongo image and guard Pi4 compatibility
+- name: Refuse a MongoDB image this CPU cannot execute
   ansible.builtin.assert:
     that:
-      - (komodo_mongo_image | default('')) | length > 0
+      - not (dietpi_preflight_is_modern_mongo and not dietpi_preflight_has_lse_atomics)
       - not ((komodo_mongo_image | default('')) is search(':latest$'))
-      - not (dietpi_preflight_is_pi4_class and dietpi_preflight_is_modern_mongo)
     fail_msg: >-
-      Mongo image compatibility check failed on {{ inventory_hostname }}.
-      Pin komodo_mongo_image to a non-latest tag and avoid official Mongo 5+ tags on
-      Pi4-class managers (Cortex-A72/BCM2711).
+      {{ inventory_hostname }} does not implement ARMv8.2-A LSE atomics, so
+      MongoDB 5+ cannot run here. This cluster uses FerretDB over Postgres
+      instead; leave komodo_mongo_image unset.
   when:
     - komodo_enabled | default(false) | bool
     - inventory_hostname in groups['managers']

@@ -1,0 +1,81 @@
+---
+# FerretDB replaces the three-member Mongo replica set, so there is no replica
+# set to initiate. What must be waited on instead is the DocumentDB extension:
+# the Postgres image installs it from /docker-entrypoint-initdb.d on first
+# start, and FerretDB cannot serve the MongoDB wire protocol until it exists.
+
+- name: Wait for the Komodo database services to reach running state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - service
+      - ps
+      - "{{ komodo_stack_name }}_{{ item }}"
+      - --filter
+      - desired-state=running
+      - --format
+      - "{{ '{{.CurrentState}}' }}"
+  loop:
+    - postgres
+    - ferretdb
+  register: komodo_db_service_check
+  changed_when: false
+  retries: "{{ komodo_db_readiness_retries }}"
+  delay: "{{ komodo_db_readiness_delay }}"
+  until: komodo_db_service_check.stdout is search('^Running')
+
+- name: Wait for Postgres to accept connections
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        cid=$(
+          /usr/bin/docker ps --quiet \
+            --filter "name={{ komodo_stack_name }}_postgres\.1\." \
+            | /usr/bin/head -n1
+        )
+        [ -n "$cid" ] || { echo "postgres container not found"; exit 1; }
+        /usr/bin/docker exec "$cid" pg_isready -U {{ komodo_db_user }} -d postgres
+  register: komodo_pg_ready
+  changed_when: false
+  failed_when: false
+  retries: "{{ komodo_db_readiness_retries }}"
+  delay: "{{ komodo_db_readiness_delay }}"
+  until: komodo_pg_ready.rc == 0
+
+- name: Wait for the DocumentDB extension to finish installing
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        cid=$(
+          /usr/bin/docker ps --quiet \
+            --filter "name={{ komodo_stack_name }}_postgres\.1\." \
+            | /usr/bin/head -n1
+        )
+        [ -n "$cid" ] || { echo "postgres container not found"; exit 1; }
+        n=$(
+          /usr/bin/docker exec "$cid" psql -U {{ komodo_db_user }} -d postgres -tAc \
+            "SELECT count(*) FROM pg_extension WHERE extname = 'documentdb';"
+        )
+        [ "${n:-0}" -ge 1 ]
+  register: komodo_documentdb_ready
+  changed_when: false
+  failed_when: false
+  retries: "{{ komodo_db_readiness_retries }}"
+  delay: "{{ komodo_db_readiness_delay }}"
+  until: komodo_documentdb_ready.rc == 0
+
+- name: Require a usable Komodo database tier
+  ansible.builtin.assert:
+    that:
+      - komodo_pg_ready.rc == 0
+      - komodo_documentdb_ready.rc == 0
+    fail_msg: >-
+      Postgres did not become ready, or the DocumentDB extension was never
+      installed. Inspect `docker service logs {{ komodo_stack_name }}_postgres`
+      before deploying Komodo Core against this database.
