@@ -1,0 +1,128 @@
+---
+- name: Read Komodo secrets once from 1Password
+  ansible.builtin.set_fact:
+    komodo_secret_values:
+      pg_password: "{{ lookup('community.general.onepassword', komodo_pg_password_secret_reference) | b64encode | b64decode }}"
+      admin_username: "{{ lookup('community.general.onepassword', komodo_admin_username_secret_reference) | b64encode | b64decode }}"
+      admin_password: "{{ lookup('community.general.onepassword', komodo_admin_password_secret_reference) | b64encode | b64decode }}"
+      jwt_secret: "{{ lookup('community.general.onepassword', komodo_jwt_secret_reference) | b64encode | b64decode }}"
+  no_log: true
+
+- name: Validate Komodo deployment inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == swarm_primary_manager
+      - komodo_domain != 'change-me.example.com'
+      - komodo_pg_password_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_admin_username_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_admin_password_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_jwt_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - komodo_secret_values.admin_username is match('^[A-Za-z0-9._-]{3,64}$')
+      - komodo_secret_values.admin_password | length >= 20
+      - komodo_secret_values.jwt_secret | length >= 32
+      - komodo_db_user is match('^[a-z_][a-z0-9_]{2,62}$')
+      - not (komodo_pg_image is search(':latest$'))
+      - not (komodo_ferretdb_image is search(':latest$'))
+      - not (komodo_image is search(':latest$'))
+    fail_msg: >-
+      Komodo requires an explicit domain, valid op:// secret references, a
+      lowercase Postgres role name, and pinned Postgres, FerretDB, and Core
+      image tags.
+
+- name: Validate the Postgres password for safe URL embedding
+  ansible.builtin.assert:
+    that:
+      - komodo_pg_password_value is match('^[A-Za-z0-9]{20,128}$')
+    fail_msg: >-
+      The Komodo Postgres password is embedded verbatim in the FerretDB
+      postgres:// connection URL, so reserved URL characters would corrupt it.
+      Regenerate the 1Password value as 20-128 alphanumeric characters with no
+      symbols or whitespace.
+  vars:
+    komodo_pg_password_value: "{{ komodo_secret_values.pg_password }}"
+  no_log: true
+
+- name: Compose the FerretDB Postgres connection URL
+  ansible.builtin.set_fact:
+    komodo_ferretdb_url_value: >-
+      postgres://{{ komodo_db_user }}:{{ komodo_secret_values.pg_password }}@postgres:5432/postgres
+  no_log: true
+
+- name: Synchronize Komodo database and application secrets into Swarm
+  ansible.builtin.include_role:
+    name: swarm_secrets
+  vars:
+    swarm_secrets_definitions:
+      - name: "{{ komodo_pg_password_secret_name }}"
+        source: "{{ komodo_pg_password_secret_reference }}"
+        value: "{{ komodo_secret_values.pg_password }}"
+        minimum_length: 20
+        ascii_only: true
+      # Derived from the same 1Password item as the password above; the source
+      # is recorded so the secret's provenance stays auditable.
+      - name: "{{ komodo_ferretdb_url_secret_name }}"
+        source: "{{ komodo_pg_password_secret_reference }}"
+        value: "{{ komodo_ferretdb_url_value | trim }}"
+        minimum_length: 20
+        ascii_only: true
+      - name: "{{ komodo_admin_password_secret_name }}"
+        source: "{{ komodo_admin_password_secret_reference }}"
+        value: "{{ komodo_secret_values.admin_password }}"
+        minimum_length: 20
+      - name: "{{ komodo_jwt_secret_name }}"
+        source: "{{ komodo_jwt_secret_reference }}"
+        value: "{{ komodo_secret_values.jwt_secret }}"
+        minimum_length: 32
+
+- name: Create Komodo stack directory
+  ansible.builtin.file:
+    path: "{{ komodo_stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create Komodo persistent configuration directory
+  ansible.builtin.file:
+    path: "{{ komodo_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# PGDATA must be owned by the in-image postgres user. Creating it as root works
+# on the very first run (the entrypoint chowns an empty directory), but on every
+# subsequent converge a root-owned directory silently breaks an already
+# initialised cluster: the server can no longer traverse into its own data.
+- name: Create the Komodo Postgres data directory
+  ansible.builtin.file:
+    path: "{{ komodo_pg_data_dir }}"
+    state: directory
+    owner: "{{ komodo_pg_uid }}"
+    group: "{{ komodo_pg_gid }}"
+    mode: "0700"
+
+- name: Render Komodo stack
+  ansible.builtin.template:
+    src: komodo-stack.yml.j2
+    dest: "{{ komodo_stack_dir }}/komodo-stack.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: komodo_stack_render
+
+- name: Deploy Komodo stack  # noqa no-handler
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - stack
+      - deploy
+      - --prune
+      - --compose-file
+      - "{{ komodo_stack_dir }}/komodo-stack.yml"
+      - "{{ komodo_stack_name }}"
+  when: komodo_stack_render.changed
+  changed_when: komodo_stack_render.changed
+
+- name: Run Komodo database readiness checks
+  ansible.builtin.include_tasks: db_readiness.yml

@@ -22,14 +22,16 @@
 
 - name: Derive metadata from the 1Password secret
   ansible.builtin.set_fact:
-    swarm_secrets_content_length: "{{ swarm_secrets_value | length }}"
-    swarm_secrets_content_sha256: "{{ swarm_secrets_value | hash('sha256') }}"
-  vars:
-    swarm_secrets_value: >-
-      {{
-        lookup('community.general.onepassword', swarm_secrets_definition.source)
-        | b64encode | b64decode
-      }}
+    swarm_secrets_current_value: >-
+      {{ swarm_secrets_definition.value if swarm_secrets_definition.value is defined else
+         lookup('community.general.onepassword', swarm_secrets_definition.source)
+         | b64encode | b64decode }}
+  no_log: true
+
+- name: Derive metadata from the cached secret value
+  ansible.builtin.set_fact:
+    swarm_secrets_content_length: "{{ swarm_secrets_current_value | length }}"
+    swarm_secrets_content_sha256: "{{ swarm_secrets_current_value | hash('sha256') }}"
   no_log: true
 
 - name: Reject an undersized 1Password secret
@@ -58,11 +60,7 @@
       The referenced 1Password value must contain printable ASCII characters
       only for this consumer.
   vars:
-    swarm_secrets_value: >-
-      {{
-        lookup('community.general.onepassword', swarm_secrets_definition.source)
-        | b64encode | b64decode
-      }}
+    swarm_secrets_value: "{{ swarm_secrets_current_value }}"
   when: swarm_secrets_definition.ascii_only | default(false) | bool
   no_log: true
 
@@ -191,11 +189,7 @@
     stdin: "{{ swarm_secrets_value }}"
     stdin_add_newline: false
   vars:
-    swarm_secrets_value: >-
-      {{
-        lookup('community.general.onepassword', swarm_secrets_definition.source)
-        | b64encode | b64decode
-      }}
+    swarm_secrets_value: "{{ swarm_secrets_current_value }}"
   when: swarm_secrets_existing.rc != 0
   changed_when: true
   no_log: true

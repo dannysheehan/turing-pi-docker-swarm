@@ -1,0 +1,11 @@
+---
+- name: Validate Komodo onboarding phase
+  ansible.builtin.assert:
+    that:
+      - komodo_onboarding_phase in ['prepare', 'finalize']
+    fail_msg: komodo_onboarding_phase must be prepare or finalize.
+  when: komodo_onboarding_enabled | bool
+
+- name: Run the requested Komodo onboarding phase
+  ansible.builtin.include_tasks: "{{ komodo_onboarding_phase }}.yml"
+  when: komodo_onboarding_enabled | bool

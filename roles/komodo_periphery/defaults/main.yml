@@ -1,0 +1,19 @@
+---
+komodo_periphery_enabled: false
+komodo_periphery_version: v2.3.2
+komodo_periphery_checksum: sha256:67c107c2670ac3aa9202df57b92b706eee4fef9620e8fafe733d9df3a66b5a5b
+komodo_periphery_port: 8120
+komodo_periphery_bind_ip: "0.0.0.0"
+komodo_periphery_root_directory: /etc/komodo
+komodo_periphery_binary_path: /usr/local/bin/periphery
+komodo_periphery_config_path: /etc/komodo/periphery.config.toml
+komodo_periphery_disable_terminals: true
+komodo_periphery_disable_container_exec: false
+komodo_periphery_ssl_enabled: true
+komodo_periphery_outbound: true
+komodo_periphery_core_address: ""
+komodo_periphery_connect_as: "{{ inventory_hostname }}"
+komodo_periphery_onboarding_key: ""
+# Secure default. Override in local.yml only while Core has an untrusted cert.
+komodo_periphery_core_tls_insecure_skip_verify: false
+komodo_periphery_start_timeout: 90

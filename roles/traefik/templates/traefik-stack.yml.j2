@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  traefik:
+    image: traefik:{{ traefik_version }}
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=true
+      - --entryPoints.web.address=:80
+      - --entryPoints.websecure.address=:443
+      - --certificatesResolvers.le.acme.email={{ traefik_acme_email }}
+      - --certificatesResolvers.le.acme.storage=/var/lib/traefik/acme.json
+      - --certificatesResolvers.le.acme.httpChallenge=true
+      - --certificatesResolvers.le.acme.httpChallenge.entryPoint=web
+      - --ping=true
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      - {{ traefik_acme_storage_dir }}/acme.json:/var/lib/traefik/acme.json
+      - {{ traefik_stack_dir }}/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      - edge
+      - komodo_back
+    deploy:
+      mode: replicated
+      replicas: {{ traefik_replicas }}
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+networks:
+  edge:
+    external: true
+    name: {{ traefik_edge_network }}
+  komodo_back:
+    external: true
+    name: {{ traefik_backend_network }}

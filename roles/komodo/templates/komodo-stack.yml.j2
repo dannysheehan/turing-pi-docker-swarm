@@ -1,0 +1,188 @@
+version: "3.9"
+
+# Komodo control plane.
+#
+# The database tier is FerretDB v2 (MongoDB wire protocol) backed by Postgres +
+# the DocumentDB extension. MongoDB 5.0 and later require ARMv8.2-A with LSE
+# atomics, which the Cortex-A53 in a CM3+ does not implement, so stock MongoDB
+# is permanently capped at the end-of-life 4.4 series on this hardware.
+# FerretDB is the upstream-documented path for exactly this case.
+#
+# Postgres, FerretDB and Komodo Core are all pinned to the primary manager
+# because the Postgres data directory and the Core key material are node-local
+# bind mounts.
+
+services:
+  postgres:
+    image: {{ komodo_pg_image }}
+    init: true
+    labels:
+      # Keep Komodo's own StopAllContainers / PruneContainers away from the
+      # database backing Komodo itself.
+      komodo.skip: "true"
+    environment:
+      POSTGRES_USER: {{ komodo_db_user }}
+      POSTGRES_PASSWORD_FILE: /run/secrets/komodo_pg_password
+      POSTGRES_DB: postgres
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U {{ komodo_db_user }} -d postgres
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_pg_password_secret_name] | default(komodo_pg_password_secret_name) }}
+        target: komodo_pg_password
+        mode: 0400
+    volumes:
+      - komodo_pg_data:/var/lib/postgresql/data
+    networks:
+      - komodo_back
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == {{ swarm_primary_manager }}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+  ferretdb:
+    image: {{ komodo_ferretdb_image }}
+    init: true
+    labels:
+      komodo.skip: "true"
+    environment:
+      # Full postgres:// URL, including credentials, supplied as a Swarm secret.
+      FERRETDB_POSTGRESQL_URL_FILE: /run/secrets/komodo_ferretdb_url
+    secrets:
+      # The FerretDB image is distroless and runs as ferretdb:ferretdb
+      # (uid/gid 1000), so a root-owned 0400 secret is unreadable to it.
+      - source: {{ swarm_secrets_resolved_names[komodo_ferretdb_url_secret_name] | default(komodo_ferretdb_url_secret_name) }}
+        target: komodo_ferretdb_url
+        uid: "{{ komodo_ferretdb_uid }}"
+        gid: "{{ komodo_ferretdb_gid }}"
+        mode: 0400
+    networks:
+      - komodo_back
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == {{ swarm_primary_manager }}
+      # No max_attempts: this service must keep retrying while Postgres
+      # completes first-time init and the DocumentDB extension installs,
+      # which takes minutes on this hardware. A bounded count makes Swarm
+      # abandon the task permanently.
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      # failure_action: continue, not rollback. These services legitimately
+      # exit non-zero while Postgres finishes first-time init, and a 30s
+      # monitor window would treat that as a failed update and silently
+      # revert the spec -- including any fix being deployed. The unbounded
+      # restart_policy above is what converges them instead.
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: continue
+        monitor: 30s
+
+  komodo-core:
+    image: {{ komodo_image }}
+    init: true
+    environment:
+      KOMODO_HOST: {{ komodo_host }}
+      KOMODO_LOCAL_AUTH: "{{ komodo_local_auth | bool | lower }}"
+      KOMODO_DISABLE_USER_REGISTRATION: "{{ komodo_disable_user_registration | bool | lower }}"
+      KOMODO_INIT_ADMIN_USERNAME: {{ komodo_secret_values.admin_username }}
+      KOMODO_INIT_ADMIN_PASSWORD_FILE: /run/secrets/komodo_admin_password
+      KOMODO_JWT_SECRET_FILE: /run/secrets/komodo_jwt_secret
+      KOMODO_DATABASE_ADDRESS: ferretdb:27017
+      KOMODO_DATABASE_USERNAME: {{ komodo_db_user }}
+      KOMODO_DATABASE_PASSWORD_FILE: /run/secrets/komodo_pg_password
+      KOMODO_DATABASE_DB_NAME: {{ komodo_database_db_name }}
+    secrets:
+      - source: {{ swarm_secrets_resolved_names[komodo_pg_password_secret_name] | default(komodo_pg_password_secret_name) }}
+        target: komodo_pg_password
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[komodo_admin_password_secret_name] | default(komodo_admin_password_secret_name) }}
+        target: komodo_admin_password
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[komodo_jwt_secret_name] | default(komodo_jwt_secret_name) }}
+        target: komodo_jwt_secret
+        mode: 0400
+    networks:
+      - edge
+      - komodo_back
+    volumes:
+      - komodo_config:/config
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == {{ swarm_primary_manager }}
+      # No max_attempts: this service must keep retrying while Postgres
+      # completes first-time init and the DocumentDB extension installs,
+      # which takes minutes on this hardware. A bounded count makes Swarm
+      # abandon the task permanently.
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      # failure_action: continue, not rollback. These services legitimately
+      # exit non-zero while Postgres finishes first-time init, and a 30s
+      # monitor window would treat that as a failed update and silently
+      # revert the spec -- including any fix being deployed. The unbounded
+      # restart_policy above is what converges them instead.
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: continue
+        monitor: 30s
+
+networks:
+  edge:
+    external: true  # pragma: allowlist secret
+    name: {{ traefik_edge_network }}
+  komodo_back:
+    external: true
+    name: {{ traefik_backend_network }}
+
+volumes:
+  komodo_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ komodo_config_dir }}
+  komodo_pg_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ komodo_pg_data_dir }}
+
+secrets:
+  {{ swarm_secrets_resolved_names[komodo_pg_password_secret_name] | default(komodo_pg_password_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret
+  {{ swarm_secrets_resolved_names[komodo_ferretdb_url_secret_name] | default(komodo_ferretdb_url_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret
+  {{ swarm_secrets_resolved_names[komodo_admin_password_secret_name] | default(komodo_admin_password_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret
+  {{ swarm_secrets_resolved_names[komodo_jwt_secret_name] | default(komodo_jwt_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret

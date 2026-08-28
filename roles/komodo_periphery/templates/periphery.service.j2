@@ -1,0 +1,16 @@
+[Unit]
+Description=Komodo Periphery agent
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart={{ komodo_periphery_binary_path }} --config-path {{ komodo_periphery_config_path }}
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

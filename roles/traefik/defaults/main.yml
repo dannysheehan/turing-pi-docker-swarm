@@ -1,0 +1,12 @@
+---
+traefik_enabled: false
+traefik_version: "v3.5"
+traefik_stack_name: traefik
+traefik_replicas: 3
+traefik_stack_dir: /opt/ansible/traefik
+traefik_domain: change-me.example.com
+traefik_acme_email: ""
+traefik_edge_network: edge
+traefik_backend_network: komodo_back
+traefik_komodo_backend_url: http://komodo-core:9120
+traefik_acme_storage_dir: /mnt/dietpi_userdata/traefik

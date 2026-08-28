@@ -1,0 +1,21 @@
+http:
+  routers:
+    komodo:
+      entryPoints:
+        - websecure
+      rule: Host(`{{ komodo_domain }}`)
+      service: komodo
+      tls: {}
+
+    traefik_ping:
+      entryPoints:
+        - websecure
+      rule: Host(`{{ traefik_domain }}`) && Path(`/ping`)
+      service: ping@internal
+      tls: {}
+
+  services:
+    komodo:
+      loadBalancer:
+        servers:
+          - url: {{ traefik_komodo_backend_url }}

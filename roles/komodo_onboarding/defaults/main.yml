@@ -1,0 +1,19 @@
+---
+komodo_onboarding_enabled: false
+komodo_onboarding_phase: prepare
+komodo_onboarding_validate_certs: true
+komodo_onboarding_api_key_secret_reference: ""
+komodo_onboarding_api_secret_secret_reference: ""
+komodo_onboarding_expiry_minutes: 30
+komodo_onboarding_key_name: ansible-swarm-bootstrap
+komodo_onboarding_tags:
+  - prod
+  - swarm
+komodo_onboarding_swarm_name: production-swarm
+komodo_onboarding_swarm_send_unhealthy_alerts: true
+komodo_onboarding_server_retries: 30
+komodo_onboarding_server_delay: 4
+komodo_onboarding_swarm_retries: 15
+komodo_onboarding_swarm_delay: 4
+komodo_onboarding_rekey_servers: []
+komodo_onboarding_rekey_confirm: false

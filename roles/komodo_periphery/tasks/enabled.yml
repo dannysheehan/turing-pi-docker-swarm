@@ -1,0 +1,74 @@
+---
+- name: Validate Periphery platform
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups['cluster']
+      - ansible_facts.architecture in ['aarch64', 'arm64']
+      - komodo_periphery_version is match('^v[0-9]+\.[0-9]+\.[0-9]+$')
+      - komodo_periphery_checksum is match('^sha256:[a-f0-9]{64}$')
+      - komodo_periphery_port | int > 0
+      - admin_cidr is match('^[0-9.]+/[0-9]+$')
+      - not (komodo_periphery_outbound | bool) or komodo_periphery_core_address is match('^https://[^/]+')
+      - not (komodo_periphery_outbound | bool) or komodo_periphery_connect_as | length > 0
+    fail_msg: >-
+      Periphery requires an ARM64 node, a pinned semantic version, a valid
+      port, and an IPv4 admin CIDR.
+
+- name: Create Periphery directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ komodo_periphery_root_directory }}"
+    - "{{ komodo_periphery_root_directory }}/keys"
+    - "{{ komodo_periphery_root_directory }}/repos"
+    - "{{ komodo_periphery_root_directory }}/stacks"
+    - "{{ komodo_periphery_root_directory }}/builds"
+
+- name: Install pinned Periphery binary
+  ansible.builtin.get_url:
+    url: "https://github.com/moghtech/komodo/releases/download/{{ komodo_periphery_version }}/periphery-aarch64"
+    dest: "{{ komodo_periphery_binary_path }}"
+    checksum: "{{ komodo_periphery_checksum }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Komodo Periphery
+
+- name: Render Periphery configuration
+  ansible.builtin.template:
+    src: periphery.config.toml.j2
+    dest: "{{ komodo_periphery_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "{{ komodo_periphery_binary_path }} --config-path %s --help"
+  notify: Restart Komodo Periphery
+
+- name: Install Periphery systemd unit
+  ansible.builtin.template:
+    src: periphery.service.j2
+    dest: /etc/systemd/system/periphery.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Komodo Periphery
+
+- name: Enable and start Komodo Periphery
+  ansible.builtin.systemd_service:
+    name: periphery.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify Komodo Periphery is active
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, is-active, periphery.service]
+  register: komodo_periphery_service_state
+  changed_when: false
+  retries: "{{ (komodo_periphery_start_timeout | int / 3) | round(0, 'ceil') | int }}"
+  delay: 3
+  until: komodo_periphery_service_state.stdout | trim == 'active'

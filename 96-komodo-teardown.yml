@@ -1,0 +1,102 @@
+---
+# Destructive. Removes the Komodo stack and all of its database state so
+# 04-services.yml can rebuild it from scratch.
+#
+# This DELETES the Komodo database. All servers, stacks, procedures, syncs,
+# users, and API keys defined in Komodo are lost. Periphery agents keep their
+# own keys on disk but the Server resources describing them are gone, so they
+# must be onboarded again.
+#
+#   uv run --frozen ansible-playbook 96-komodo-teardown.yml \
+#     -i hosts.yml -e komodo_teardown_confirm=true --ask-vault-pass
+
+- name: Remove the Komodo stack from the Swarm
+  hosts: primary_manager
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [komodo, teardown]
+  pre_tasks:
+    - name: Require explicit teardown confirmation
+      ansible.builtin.assert:
+        that:
+          - komodo_teardown_confirm | default(false) | bool
+          - inventory_hostname == swarm_primary_manager
+        fail_msg: >-
+          This destroys the Komodo database irreversibly. Re-run with
+          -e komodo_teardown_confirm=true from the primary manager once you
+          accept losing all Komodo-defined resources.
+
+  tasks:
+    - name: Check whether the Komodo stack is deployed
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, stack, ls, --format, "{{ '{{.Name}}' }}"]
+      register: komodo_teardown_stacks
+      changed_when: false
+      check_mode: false
+
+    - name: Remove the Komodo stack
+      ansible.builtin.command:
+        argv: [/usr/bin/docker, stack, rm, "{{ komodo_stack_name }}"]
+      when: komodo_stack_name in komodo_teardown_stacks.stdout_lines
+      changed_when: true
+
+    # `docker stack rm` returns before the tasks it removed have exited, and a
+    # volume still attached to a shutting-down task cannot be removed.
+    - name: Wait for every Komodo service to disappear
+      ansible.builtin.shell: >-
+        set -o pipefail &&
+        test "$(/usr/bin/docker service ls --format '{{ '{{.Name}}' }}'
+        | /usr/bin/grep -c '^{{ komodo_stack_name }}_' || true)" -eq 0
+      args:
+        executable: /bin/bash
+      register: komodo_teardown_drained
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: komodo_teardown_drained.rc == 0
+
+- name: Remove Komodo database state from every manager
+  hosts: managers
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [komodo, teardown]
+  tasks:
+    - name: Require explicit teardown confirmation
+      ansible.builtin.assert:
+        that: komodo_teardown_confirm | default(false) | bool
+        fail_msg: Re-run with -e komodo_teardown_confirm=true.
+
+    - name: Remove the Komodo Postgres data directory
+      ansible.builtin.file:
+        path: "{{ komodo_pg_data_dir }}"
+        state: absent
+
+    # Core's Noise keypair lives here. Removing it forces a fresh identity, which
+    # is correct for a rebuild: the Periphery agents are re-onboarded anyway and
+    # would otherwise refuse a Core whose public key no longer matches.
+    - name: Remove the Komodo Core configuration directory
+      ansible.builtin.file:
+        path: "{{ komodo_config_dir }}"
+        state: absent
+
+- name: Reset Periphery identity so agents re-enroll cleanly
+  hosts: cluster
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [komodo, teardown, periphery]
+  tasks:
+    - name: Require explicit teardown confirmation
+      ansible.builtin.assert:
+        that: komodo_teardown_confirm | default(false) | bool
+        fail_msg: Re-run with -e komodo_teardown_confirm=true.
+
+    - name: Stop the Periphery agent
+      ansible.builtin.systemd_service:
+        name: periphery
+        state: stopped
+      failed_when: false
+
+    - name: Remove the Periphery keypair
+      ansible.builtin.file:
+        path: "{{ komodo_periphery_root_directory }}/keys"
+        state: absent

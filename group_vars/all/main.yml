@@ -24,7 +24,6 @@ docker_data_root: /mnt/dietpi_userdata/docker-data
 docker_engine_version: 29.7.2
 
 # Portainer (deployed by 04-services / portainer role)
-portainer_enabled: true
 portainer_version: 2.39.6
 portainer_primary_manager: "{{ swarm_primary_manager }}"
 portainer_data_dir: /mnt/dietpi_userdata/portainer-data
@@ -55,3 +54,82 @@ os_maintenance_reboot: true
 keepalived_interface: eth0
 keepalived_virtual_router_id: 51
 keepalived_auth_pass: "{{ vault_keepalived_auth_pass | default('') }}"
+
+# Traefik + Komodo (deployed by 04-services / traefik + komodo roles)
+traefik_version: "v3.5"
+traefik_stack_name: traefik
+traefik_replicas: 3
+traefik_stack_dir: /opt/ansible/traefik
+traefik_edge_network: edge
+traefik_backend_network: komodo_back
+traefik_acme_storage_dir: /mnt/dietpi_userdata/traefik
+traefik_komodo_backend_url: http://komodo-core:9120
+
+komodo_image: ghcr.io/moghtech/komodo-core:2.3.2@sha256:7ae1d1547b16f1fd88902050105d80bbefc41b3023baf1f6dbc2b8df47ecb526
+komodo_stack_name: komodo
+komodo_stack_dir: /opt/ansible/komodo
+# Derived from komodo_domain, which the ignored local.yml supplies. Keeping the
+# real hostname out of the tracked tree matches hosts.yml.example and
+# local.yml.example, which use the documentation ranges only.
+komodo_host: "https://{{ komodo_domain }}"
+komodo_local_auth: true
+komodo_disable_user_registration: true
+komodo_admin_username_secret_name: komodo_admin_username  # pragma: allowlist secret
+komodo_admin_password_secret_name: komodo_admin_password  # pragma: allowlist secret
+komodo_jwt_secret_name: komodo_jwt_secret  # pragma: allowlist secret
+komodo_config_dir: /mnt/dietpi_userdata/komodo-config
+komodo_admin_username_secret_reference: op://Turing-Pi/Komodo/admin-username  # pragma: allowlist secret
+komodo_admin_password_secret_reference: op://Turing-Pi/Komodo/admin-password  # pragma: allowlist secret
+komodo_jwt_secret_reference: op://Turing-Pi/Komodo/jwt-secret  # pragma: allowlist secret
+
+# Database tier: FerretDB v2 (MongoDB wire protocol) over Postgres 17 +
+# the DocumentDB extension.
+#
+# These nodes are Raspberry Pi CM3+ (Cortex-A53, ARMv8-A). MongoDB 5.0+ needs
+# ARMv8.2-A LSE atomics, which this CPU does not implement, so stock MongoDB
+# is permanently stuck at the end-of-life 4.4 series here. FerretDB is the
+# upstream-documented path for hosts that cannot run current MongoDB, and it
+# replaces the three-member Mongo replica set with a single Postgres instance.
+#
+# Keep the pair version-matched: the postgres-documentdb tag names the FerretDB
+# release it belongs with. Upstream warns that updates between them can break.
+komodo_pg_image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0@sha256:2386795ec2aa7ae559304361979f1dc5708d383ee9020ae63dadc2940dfe58f7
+komodo_ferretdb_image: ghcr.io/ferretdb/ferretdb:2.7.0@sha256:5706414241eb84f0515512c37b46db0f1b1eac9e5ceb7e4c2523211c184b1985
+komodo_pg_data_dir: /mnt/dietpi_userdata/komodo-postgres
+# The Postgres image runs as postgres (uid/gid 999); PGDATA must stay
+# owned by it or the server cannot traverse its own data directory.
+komodo_pg_uid: 999
+komodo_pg_gid: 999
+komodo_ferretdb_uid: 1000
+komodo_ferretdb_gid: 1000
+komodo_db_user: komodo_user
+komodo_database_db_name: komodo
+komodo_pg_password_secret_name: komodo_pg_password  # pragma: allowlist secret
+komodo_ferretdb_url_secret_name: komodo_ferretdb_url  # pragma: allowlist secret
+# Sized for a cold pull of the ~479MB Postgres image plus first-time
+# DocumentDB install on a CM3+: 120 x 5s = 10 minutes.
+komodo_db_readiness_retries: 120
+komodo_db_readiness_delay: 5
+
+komodo_periphery_enabled: true
+komodo_periphery_version: v2.3.2
+komodo_periphery_checksum: sha256:67c107c2670ac3aa9202df57b92b706eee4fef9620e8fafe733d9df3a66b5a5b
+komodo_periphery_root_directory: /etc/komodo
+komodo_periphery_core_address: "{{ komodo_host }}"
+komodo_periphery_outbound: true
+
+# Komodo API bootstrap. A non-privileged onboarding key is created only when
+# inventory hosts do not already exist in Komodo, then disabled after all
+# Periphery connections and the Swarm resource have been verified.
+komodo_onboarding_enabled: >-
+  {{ komodo_enabled | bool and komodo_periphery_enabled | bool }}
+komodo_onboarding_expiry_minutes: 30
+komodo_onboarding_swarm_name: production-swarm
+komodo_onboarding_swarm_send_unhealthy_alerts: true
+# NOTE: files in group_vars/all/ load alphabetically and later files win, so
+# anything defined here SHADOWS group_vars/all/local.yml. Deployment-specific
+# values must therefore live only in local.yml, never here. Secure defaults for
+# these keys come from roles/komodo_onboarding/defaults/main.yml, and the
+# playbook-level uses apply `| default(true)`.
+komodo_onboarding_rekey_servers: []
+komodo_onboarding_rekey_confirm: false

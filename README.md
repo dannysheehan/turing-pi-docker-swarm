@@ -100,6 +100,9 @@ does not make that commit safe.
 
 ## Secrets
 
+For CLI-first Komodo installation, Periphery enrollment, Resource Sync setup,
+routine operations, and recovery, see [KOMODO-OPERATIONS.md](KOMODO-OPERATIONS.md).
+
 Application runtime secrets can use 1Password as their source of truth and
 native Docker Swarm secrets for delivery. The repository stores only `op://`
 references. Ansible retrieves values on the controller with the
@@ -129,10 +132,75 @@ referenced by:
 ```yaml
 portainer_database_secret_reference: op://Automation/Portainer/database-key
 portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
+komodo_pg_password_secret_reference: op://Automation/Komodo/postgres-password
+komodo_admin_username_secret_reference: op://Automation/Komodo/admin-username
+komodo_admin_password_secret_reference: op://Automation/Komodo/admin-password
+komodo_jwt_secret_reference: op://Automation/Komodo/jwt-secret
+# Optional administrator API credentials for unattended onboarding after 2FA:
+komodo_onboarding_api_key_secret_reference: op://Automation/Komodo/bootstrap-api-key
+komodo_onboarding_api_secret_secret_reference: op://Automation/Komodo/bootstrap-api-secret
 ```
 
 These are examples; put the real references only in the ignored
 `group_vars/all/local.yml` file.
+
+Komodo local authentication is enabled by default. On a fresh deployment, Core
+creates the initial administrator from the configured username and password, so
+`komodo_disable_user_registration` can remain `true` from the first run. Create
+these additional 1Password fields before the first Komodo deployment:
+
+- `admin-username`: 3-64 characters from letters, numbers, `.`, `_`, or `-`.
+- `admin-password`: at least 20 characters.
+- `jwt-secret`: at least 32 characters; use a randomly generated value.
+- `postgres-password`: 20-128 **alphanumeric** characters. It is embedded
+  verbatim in the FerretDB `postgres://` connection URL, so symbols and
+  whitespace would corrupt it.
+
+The username is passed as non-secret initialization configuration because it
+is not credential material. The password and JWT secret are synchronized as
+Swarm secrets. After the first successful login, keep the admin password and
+JWT secret in 1Password; do not place either value in the stack file.
+
+The Komodo database is FerretDB v2 over Postgres 17 with the DocumentDB
+extension. MongoDB 5.0+ requires ARMv8.2-A LSE atomics, which the Cortex-A53 in
+a CM3+ does not implement, so stock MongoDB is permanently capped at the
+end-of-life 4.4 series on this hardware; FerretDB is the path Komodo documents
+for exactly that case. It also replaces a three-member replica set with a
+single Postgres instance, which matters on 955MB nodes.
+
+The Postgres password is synchronized as the immutable Swarm secret
+`komodo_pg_password_<sha256-prefix>`. Komodo Core reads it from
+`/run/secrets/komodo_pg_password` through `KOMODO_DATABASE_PASSWORD_FILE`, and
+FerretDB reads a derived connection URL from `/run/secrets/komodo_ferretdb_url`
+through `FERRETDB_POSTGRESQL_URL_FILE`. Neither value is rendered into the
+service environment or the stack file.
+
+Rotating this password is not a matter of editing 1Password alone.
+`POSTGRES_PASSWORD` is only read when the entrypoint initialises an empty data
+directory, so changing the 1Password value on a running cluster rotates the
+Swarm secret and the FerretDB URL but leaves the database credential unchanged,
+and Core then fails to authenticate. Change it with `ALTER ROLE` inside
+Postgres first; see the rotation procedure in `KOMODO-OPERATIONS.md`.
+
+Periphery is deployed by Ansible to all seven nodes as a checksum-verified,
+systemd-managed ARM64 binary. Each agent connects outbound to Komodo Core, so
+port 8120 is not exposed by the cluster firewall. Run the complete Core-first
+enrollment flow with:
+
+```sh
+uv run --frozen ansible-playbook 04-services.yml \
+  -i hosts.yml --tags komodo,periphery,onboarding --ask-vault-pass
+```
+
+Ansible logs in with the initialization administrator, creates a 30-minute
+non-privileged onboarding key only for missing inventory hosts, enrolls the
+agents serially, verifies all connections, and disables the key. The temporary
+key is protected with `no_log`, removed from each Periphery configuration, and
+never committed. Periphery retains its own private key under
+`/etc/komodo/keys`. Ansible then creates or updates the Komodo Swarm with only
+the three manager Server resources and verifies that Komodo discovers all seven
+Docker nodes. Keep `komodo-infra/` in Resource Sync review mode until several
+manual syncs have been verified.
 
 The resulting Swarm object is named
 `portainer_database_key_<sha256-prefix>` and labelled with its full content
@@ -209,13 +277,17 @@ are not an alternative rollout sequence.
 | `05-os-maintenance.yml` | Explicit rolling DietPi/OS maintenance |
 | `06-portainer-setup.yml` | One-time, token-aware creation of a fresh Portainer administrator |
 | `08-firewall.yml` | Explicit serial firewall activation |
+| `96-komodo-teardown.yml` | Destructive, confirm-gated removal of Komodo and all of its database state |
 | `97-swarm-restore.yml` | Destructive, highly guarded Raft-state restoration |
 | `98-swarm-backup.yml` | Operator-requested encrypted Swarm backup |
 | `99-portainer-restart.yml` | Rolling Portainer server restart or fresh setup-window reset |
 | `99-reboot-kernel.yml` | Emergency reboot of exactly one limited node |
 
-`04-services.yml` exposes `nfs`, `keepalived`, and `portainer` tags for a
-scoped operator convergence, for example `--tags portainer`.
+`04-services.yml` exposes `nfs`, `keepalived`, `traefik`, `database`,
+`periphery`, `onboarding`, and `komodo` tags for a scoped operator
+convergence. Use `--tags database` to reconcile only the Postgres/FerretDB
+tier and Komodo Core, or `--tags komodo` for the whole control plane including
+Periphery enrollment and the Swarm resource.
 
 `site.yml` does not perform OS upgrades, Portainer data migration, firewall
 activation, first Swarm initialization, Swarm backup/restore, or emergency
