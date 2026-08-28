@@ -24,7 +24,6 @@ docker_data_root: /mnt/dietpi_userdata/docker-data
 docker_engine_version: 29.7.2
 
 # Portainer (deployed by 04-services / portainer role)
-portainer_enabled: true
 portainer_version: 2.39.6
 portainer_primary_manager: "{{ swarm_primary_manager }}"
 portainer_data_dir: /mnt/dietpi_userdata/portainer-data

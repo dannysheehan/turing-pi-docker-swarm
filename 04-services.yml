@@ -53,6 +53,13 @@
   roles:
     - role: keepalived
 
+- name: Reconcile Portainer Swarm services
+  hosts: primary_manager
+  tags: [portainer]
+  gather_facts: true
+  roles:
+    - role: portainer
+
 - name: Reconcile Traefik ingress services
   hosts: managers
   tags: [traefik]
