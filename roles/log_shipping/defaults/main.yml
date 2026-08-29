@@ -12,7 +12,7 @@
 # node dying outright.
 log_shipping_enabled: false
 log_shipping_server: "{{ nfs_server }}"
-log_shipping_port: 512
+log_shipping_port: 514
 # The queue is deliberately in-memory: a disk-assisted queue would write to
 # the eMMC, which is the thing RAMlog exists to avoid.
 #
