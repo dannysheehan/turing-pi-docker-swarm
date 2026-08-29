@@ -31,12 +31,11 @@ ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p 112 -j ACCEPT
 {% endif %}
 ${IPT} -A ANSIBLE-INPUT -j DROP
 
-${IPT} -N ANSIBLE-PORTAINER 2>/dev/null || ${IPT} -F ANSIBLE-PORTAINER
-${IPT} -C DOCKER-USER -j ANSIBLE-PORTAINER 2>/dev/null || ${IPT} -I DOCKER-USER 1 -j ANSIBLE-PORTAINER
-${IPT} -A ANSIBLE-PORTAINER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-${IPT} -A ANSIBLE-PORTAINER -p tcp -s {{ admin_cidr }} --dport {{ portainer_https_port }} -j ACCEPT
-${IPT} -A ANSIBLE-PORTAINER -p tcp --dport {{ portainer_https_port }} -j DROP
-${IPT} -A ANSIBLE-PORTAINER -j RETURN
+# Portainer has been removed. Tear down the chain it used, so nodes that were
+# firewalled for it before the removal do not keep a stale jump in DOCKER-USER.
+${IPT} -D DOCKER-USER -j ANSIBLE-PORTAINER 2>/dev/null || true
+${IPT} -F ANSIBLE-PORTAINER 2>/dev/null || true
+${IPT} -X ANSIBLE-PORTAINER 2>/dev/null || true
 
 ${IP6T} -N ANSIBLE-INPUT 2>/dev/null || ${IP6T} -F ANSIBLE-INPUT
 ${IP6T} -C INPUT -j ANSIBLE-INPUT 2>/dev/null || ${IP6T} -I INPUT 1 -j ANSIBLE-INPUT

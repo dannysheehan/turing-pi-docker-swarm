@@ -33,21 +33,6 @@
     that: os_maintenance_swarm_backups.matched | int > 0
     fail_msg: Run and validate 98-swarm-backup.yml before OS maintenance.
 
-- name: Find a validated Portainer backup prerequisite
-  ansible.builtin.find:
-    paths: "{{ nfs_mount }}/backups/portainer"
-    patterns: "portainer-*.tar.gz.enc"
-    file_type: file
-    recurse: false
-  register: os_maintenance_portainer_backups
-  when: portainer_enabled | bool
-
-- name: Require a Portainer backup before maintenance
-  ansible.builtin.assert:
-    that: os_maintenance_portainer_backups.matched | int > 0
-    fail_msg: Run and validate the Portainer backup before OS maintenance.
-  when: portainer_enabled | bool
-
 - name: Read original Swarm availability
   ansible.builtin.command:
     argv:

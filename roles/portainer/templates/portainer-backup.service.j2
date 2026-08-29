@@ -1,8 +1,0 @@
-[Unit]
-Description=Consistent encrypted Portainer backup
-RequiresMountsFor={{ nfs_mount }}
-After=docker.service network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/portainer-backup

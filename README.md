@@ -10,8 +10,6 @@ The host in the single-member `primary_manager` inventory group is the
 administrative endpoint. It must match `swarm_primary_manager` and is not
 assumed to be the Raft leader. The expected existing Swarm ID is configured by
 `swarm_expected_cluster_id`; it is an identifier, not an authentication
-secret. `portainer_primary_manager` derives from `swarm_primary_manager`, so
-Portainer follows the same explicitly selected administrative manager.
 
 ## Ownership boundary
 
@@ -26,7 +24,7 @@ DietPi owns its lifecycle and platform integration:
 
 Ansible validates those invariants and owns live hostname, timezone, the
 managed cluster block in `/etc/hosts`, exact Docker engine package versions,
-Swarm membership, NFS, Portainer, Keepalived, and dedicated firewall chains.
+Swarm membership, NFS, Keepalived, and dedicated firewall chains.
 It never rewrites ordinary DietPi networking, edits cgroup boot arguments,
 replaces RAMlog, deletes Swarm state, or silently demotes managers.
 
@@ -116,7 +114,6 @@ service-account token that can read only the automation vault:
 
 ```sh
 export OP_SERVICE_ACCOUNT_TOKEN='your-controller-or-CI-secret'
-op read 'op://Automation/Portainer/database-key' >/dev/null
 ```
 
 Unlock 1Password before starting a fleet-wide Ansible run. The repository
@@ -125,13 +122,10 @@ SSH agent can approve the initial connection batch without Ansible using its
 short default timeout.
 
 Never save `OP_SERVICE_ACCOUNT_TOKEN` in this repository, an Ansible variable,
-or a Vault file. Store it in the controller keychain or CI secret store. The
-Portainer database key must be exactly 32 printable ASCII characters and is
-referenced by:
+or a Vault file. Store it in the controller keychain or CI secret store.
+Secrets are referenced by:
 
 ```yaml
-portainer_database_secret_reference: op://Automation/Portainer/database-key
-portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
 komodo_pg_password_secret_reference: op://Automation/Komodo/postgres-password
 komodo_admin_username_secret_reference: op://Automation/Komodo/admin-username
 komodo_admin_password_secret_reference: op://Automation/Komodo/admin-password
@@ -202,39 +196,9 @@ the three manager Server resources and verifies that Komodo discovers all seven
 Docker nodes. Keep `komodo-infra/` in Resource Sync review mode until several
 manual syncs have been verified.
 
-The resulting Swarm object is named
-`portainer_database_key_<sha256-prefix>` and labelled with its full content
-hash. Portainer receives it at `/run/secrets/portainer`. After the updated
-server task, all agents, mounted secret reference, and HTTPS status endpoint
-are healthy, Ansible removes older unused managed versions.
-
-Adding this key to an existing Portainer installation encrypts its database
-and is irreversible. Before the first deployment, verify both an encrypted
-Portainer backup and the ability to retrieve the exact 1Password item. Do not
-delete or rotate that item independently of an Ansible deployment: Portainer
-cannot start an encrypted database with the wrong key. Unlike ordinary Swarm
-credentials, this database key cannot be rotated by merely replacing the
-secret. The role detects a changed key and fails before altering the running
-service; rotation requires a separately designed Portainer re-key procedure.
-The first encryption of an existing database is deliberately blocked unless
-the operator supplies the one-time acknowledgement:
-
-```sh
-uv run --frozen ansible-playbook 04-services.yml \
-  -e portainer_database_encryption_confirm=true --ask-vault-pass
-```
-
-Subsequent convergences detect the secret already mounted by the service and
-do not require this acknowledgement.
-
 Native Swarm secrets remain encrypted in the replicated Raft log and available
 to scheduled tasks when 1Password is unavailable. A new convergence or secret
 rotation still requires controller access to 1Password.
-
-Portainer's unattended backup passphrase is a separate 1Password field. It is
-resolved during convergence and installed as a root-only host file because the
-systemd backup job runs independently of Swarm. It must never reuse the
-database-encryption key.
 
 Host-level operational secrets that are not consumed by Swarm services remain
 in Ansible Vault. Create the automatically loaded Vault file from the
@@ -254,13 +218,10 @@ variables are:
 ```yaml
 vault_keepalived_auth_pass: exactly8
 vault_backup_passphrase: a-long-random-backup-encryption-passphrase
-vault_portainer_admin_password: an-optional-initial-password
 ```
 
 The VRRP password must be exactly eight characters. The backup passphrase must
-be at least 20 characters. The Portainer administrator password is used only
-by the explicitly enabled fresh-install initialization play. Secret-bearing
-tasks use `no_log`.
+be at least 20 characters. Secret-bearing tasks use `no_log`.
 
 ## Supported playbooks
 
@@ -275,12 +236,10 @@ are not an alternative rollout sequence.
 | `01-provision.yml` through `04-services.yml` | Targeted baseline, Docker, Swarm, or service reconciliation |
 | `03-swarm-bootstrap.yml` | Explicit, one-time initialization of a genuinely new Swarm |
 | `05-os-maintenance.yml` | Explicit rolling DietPi/OS maintenance |
-| `06-portainer-setup.yml` | One-time, token-aware creation of a fresh Portainer administrator |
 | `08-firewall.yml` | Explicit serial firewall activation |
 | `96-komodo-teardown.yml` | Destructive, confirm-gated removal of Komodo and all of its database state |
 | `97-swarm-restore.yml` | Destructive, highly guarded Raft-state restoration |
 | `98-swarm-backup.yml` | Operator-requested encrypted Swarm backup |
-| `99-portainer-restart.yml` | Rolling Portainer server restart or fresh setup-window reset |
 | `99-reboot-kernel.yml` | Emergency reboot of exactly one limited node |
 
 `04-services.yml` exposes `nfs`, `keepalived`, `traefik`, `database`,
@@ -289,7 +248,7 @@ convergence. Use `--tags database` to reconcile only the Postgres/FerretDB
 tier and Komodo Core, or `--tags komodo` for the whole control plane including
 Periphery enrollment and the Swarm resource.
 
-`site.yml` does not perform OS upgrades, Portainer data migration, firewall
+`site.yml` does not perform OS upgrades, firewall
 activation, first Swarm initialization, Swarm backup/restore, or emergency
 reboots.
 
@@ -316,7 +275,7 @@ the other managers and workers. Do not use first initialization after state
 loss; restore the encrypted Swarm backup so the recorded cluster identity is
 preserved.
 
-The completed NFS-to-local Portainer migration playbook has been removed. It
+The completed NFS-to-local migration playbook has been removed. It
 targeted the retired HTTP-9000/NFS deployment and must not be rerun against
 the current encrypted local database. The retained NFS data and encrypted
 archives are rollback artifacts, not active application storage.
@@ -326,7 +285,7 @@ archives are rollback artifacts, not active application storage.
 1. Run `make validate`.
 2. Run the read-only preflight with
    `uv run --frozen ansible-playbook 00-preflight.yml --ask-vault-pass`.
-3. Create and validate current Portainer and Swarm backups before disruptive
+3. Create and validate a current Swarm backup before disruptive
    maintenance.
 4. Run `uv run --frozen ansible-playbook site.yml --ask-vault-pass`.
 5. Review the recap, then run `site.yml` again to verify idempotence.
@@ -339,66 +298,7 @@ archives are rollback artifacts, not active application storage.
    ```
 
 Normal `site.yml` convergence requires the Keepalived and backup secrets when
-those services are enabled. Set `portainer_enabled: false` to omit every
-Portainer deployment and backup action.
-
-## Portainer architecture and initial setup
-
-Portainer CE 2.39.6 runs as one server replica pinned to the host selected by
-`primary_manager`, with a global agent on all seven nodes. Agents use a private
-overlay and the server connects to `tasks.agent:9001`. Only HTTPS 9443 is
-published; 9000 and 8000 are not published. Updates and rollbacks are
-one-at-a-time and stop-first. Its
-database-encryption key is synchronized from 1Password into a versioned native
-Swarm secret and mounted only into the server task.
-
-The agent mounts DietPi's actual Docker volume store from
-`{{ docker_data_root }}/volumes` to the vendor-required in-container path
-`/var/lib/docker/volumes`; it does not assume Debian's default host path.
-
-The encrypted database is stored at
-`/mnt/dietpi_userdata/portainer-data` on `portainer_primary_manager`, not NFS.
-Ordinary convergence refuses to move or initialize data implicitly.
-
-Portainer 2.39 generates an ephemeral setup token when no administrator exists.
-The token is a short-lived bootstrap credential written to the server task log;
-it is not the 1Password database key and must not be committed or saved as a
-long-lived secret.
-
-For automatic initialization, put `vault_portainer_admin_password` in the
-encrypted Vault file, temporarily set `portainer_auto_setup: true`, then run:
-
-```sh
-uv run --frozen ansible-playbook 06-portainer-setup.yml --ask-vault-pass
-```
-
-The play opens a fresh setup window, reads the token with `no_log`, sends it in
-the `X-Setup-Token` header, creates the administrator, and verifies completion.
-Set `portainer_auto_setup` back to `false` afterward.
-
-For manual browser setup, restart the server and print the newest token only to
-your terminal:
-
-```sh
-make portainer-restart
-make portainer-setup-token
-```
-
-Paste the 64-character result into Portainer's **Setup token** field and finish
-within five minutes. If it expires, repeat both commands. The helper reads the
-token in memory and does not write it to the repository or a temporary file.
-See Portainer's [initial setup](https://docs.portainer.io/start/install/server/setup)
-and [setup timeout](https://docs.portainer.io/faqs/installing/your-portainer-instance-has-timed-out-for-security-purposes-error-fix)
-documentation for the vendor workflow.
-
-The daily 03:30 backup verifies NFS, scales the server to zero, encrypts and
-validates the local data archive, restores the replica through a shell trap,
-and removes successful archives older than 14 days.
-
-The NAS export uses root squash, so NFS objects are owned by the NAS-mapped
-account rather than Linux root. Ansible enforces restrictive modes and
-writability but does not attempt an invalid `chown root` across the NFS
-boundary. NAS-side ownership and ACL policy remain owned by the NAS.
+those services are enabled.
 
 ## Maintenance and recovery
 
@@ -451,10 +351,10 @@ rather than deleting state ad hoc.
 
 ## Network and availability limits
 
-The firewall owns only `ANSIBLE-INPUT` and `ANSIBLE-PORTAINER` and leaves
+The firewall owns only `ANSIBLE-INPUT` and leaves
 DietPi/Docker-generated rules intact. It trusts peer-only Swarm ports
 2377/tcp, 7946/tcp+udp, and 4789/udp; manager-only VRRP protocol 112; and LAN
-SSH/Portainer access. VXLAN must never be exposed to an untrusted network.
+SSH access. VXLAN must never be exposed to an untrusted network.
 
 Keepalived derives its interface, `/24` VIP, priorities, and unicast peers from
 inventory and tracks local Docker/manager health. All three managers remain in
