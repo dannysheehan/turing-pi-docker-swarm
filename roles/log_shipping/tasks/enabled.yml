@@ -51,6 +51,28 @@
     enabled: true
     state: started
 
+# UDP forwarding to a closed port fails silently: rsyslog reports success and
+# the logs are simply discarded. Probe the receiver so a wrong port or a
+# stopped Log Center is a loud failure rather than an empty log server.
+- name: Install the syslog receiver probe
+  ansible.builtin.copy:
+    src: check-syslog-receiver.py
+    dest: /usr/local/bin/check-syslog-receiver
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Verify the syslog receiver accepts traffic
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/check-syslog-receiver
+      - "{{ log_shipping_server }}"
+      - "{{ log_shipping_port }}"
+  register: log_shipping_probe
+  changed_when: false
+  failed_when: log_shipping_probe.rc != 0
+  when: log_shipping_protocol == 'udp'
+
 - name: Verify rsyslog is active
   ansible.builtin.systemd_service:
     name: rsyslog.service

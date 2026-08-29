@@ -54,7 +54,7 @@ backup_passphrase: "{{ vault_backup_passphrase | default('') }}"
 # hangs takes all its evidence with it -- which is exactly what happened to
 # tpi-mgr-01 on 2026-08-29.
 log_shipping_enabled: true
-log_shipping_port: 512
+log_shipping_port: 514
 log_shipping_protocol: udp
 
 os_maintenance_patches: true
