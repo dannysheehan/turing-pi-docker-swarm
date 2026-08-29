@@ -45,7 +45,7 @@ services:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == {{ swarm_primary_manager }}
+          - node.hostname == {{ komodo_db_node }}
       restart_policy:
         condition: on-failure
         delay: 5s
@@ -83,7 +83,7 @@ services:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == {{ swarm_primary_manager }}
+          - node.hostname == {{ komodo_db_node }}
       # No max_attempts: this service must keep retrying while Postgres
       # completes first-time init and the DocumentDB extension installs,
       # which takes minutes on this hardware. A bounded count makes Swarm
@@ -131,12 +131,15 @@ services:
       - komodo_back
     volumes:
       - komodo_config:/config
+      # Komodo's own BackupCoreDatabase procedure dumps here. Without this
+      # mount the scheduled backup has nowhere durable to write.
+      - komodo_backups:/backups
     deploy:
       mode: replicated
       replicas: 1
       placement:
         constraints:
-          - node.hostname == {{ swarm_primary_manager }}
+          - node.hostname == {{ komodo_db_node }}
       # No max_attempts: this service must keep retrying while Postgres
       # completes first-time init and the DocumentDB extension installs,
       # which takes minutes on this hardware. A bounded count makes Swarm
@@ -176,6 +179,14 @@ volumes:
       type: none
       o: bind
       device: {{ komodo_pg_data_dir }}
+  # Backups live on the NAS, not on the node's eMMC: they must survive total
+  # loss of the node that holds the database.
+  komodo_backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr={{ komodo_backups_nfs_server }},{{ komodo_backups_nfs_opts }}"
+      device: ":{{ komodo_backups_nfs_path }}"
 
 secrets:
   {{ swarm_secrets_resolved_names[komodo_pg_password_secret_name] | default(komodo_pg_password_secret_name) }}:  # pragma: allowlist secret
