@@ -59,6 +59,90 @@ docker exec "$cid" psql -U komodo_user -d postgres -tAc \
 the MongoDB wire protocol until they are, and Komodo Core will crash-loop
 against a database that lacks them.
 
+## Backups
+
+Komodo backs up its own database through the **Backup Core Database**
+procedure, created automatically and scheduled daily at 01:00. It writes
+gzip-compressed per-collection dumps to `/backups` in the Core container and
+retains the most recent 14. Because it works at the MongoDB wire-protocol
+level it is agnostic to FerretDB sitting on Postgres.
+
+`/backups` is mounted from the NAS rather than node storage, so a backup
+survives total loss of the node holding the database. Dump files need no
+particular ownership, which matters because the export uses `root_squash`.
+
+Verify a backup has actually landed:
+
+```sh
+ls -la /srv/nfs/backups/komodo
+```
+
+An empty directory the morning after a deploy means the procedure ran with
+nowhere to write. Confirm the mount is present:
+
+```sh
+cid=$(docker ps --quiet --filter 'name=komodo_komodo-core\.1\.' | head -n1)
+docker exec "$cid" ls /backups
+```
+
+Restore with `km db restore`, selecting a dated folder.
+
+## Single-Node Placement and Failover
+
+Postgres data and Core's Noise keypair are node-local bind mounts, so all
+three services are pinned to `komodo_db_node` (default: the primary manager).
+This is a deliberate single point of failure: shared storage plus automatic
+rescheduling risks two Postgres instances writing one data directory during a
+network partition, which corrupts the database.
+
+If the pinned node is lost, Komodo stops entirely and Swarm reports the tasks
+as `Pending` with `no suitable node (scheduling constraints not satisfied)`.
+The rest of the cluster is unaffected: the Swarm keeps quorum on the remaining
+managers, Traefik keeps serving, and Keepalived moves the VIP.
+
+To fail over, point `komodo_db_node` at another manager and re-run the
+`database` tag. **This does not move the database.** PGDATA stays on the old
+node, so the new instance initialises empty and Komodo comes up with no
+Servers or Swarm. Restore from the latest NAS backup, or re-run onboarding.
+
+Recovering the original node is therefore preferable whenever it is possible.
+
+## Storage Layout and Why It Is What It Is
+
+| What | Where | Why |
+|---|---|---|
+| Postgres data | node-local eMMC bind mount | forced: see below |
+| Core `/config` (Noise keypair) | node-local bind mount today; **NFS works** | proven, see below |
+| Backups | NFS on the NAS | must survive loss of the node holding the database |
+
+**Postgres cannot live on the NAS.** PGDATA must be owned by the in-image
+postgres user (uid 999, mode 0700) and PostgreSQL refuses to run as root. The
+NFS export accepts writes from uid 0 only: uid 999, 1000, 1024 and 1026 are all
+denied even on a 0777 directory, because the NAS applies its own access control
+on top of POSIX permissions. Those two facts are mutually exclusive, so the
+database stays on local storage and its services stay pinned to
+`komodo_db_node`.
+
+Backups work precisely because Komodo Core runs as **root** in its container,
+and root is the one uid the export accepts.
+
+**Core `/config` on NFS is proven to work.** Verified on 2026-08-29: Core
+starts with its keypair on an `nfsvers=4` volume, writes `core.key` and
+`core.pub` as `0600` owned `0:0`, and reports the **same public key after a
+restart**. That last point is what matters, because Periphery agents pin Core's
+public key and would reject a Core that returned with a fresh identity.
+
+This depends on `root_squash` being disabled on the export. If squashing is
+re-enabled the files become owned by the mapped uid; Core would be squashed to
+the same uid so it would probably still match, but that combination is
+untested.
+
+The consequence: `ferretdb` (stateless, telemetry only) and `komodo-core`
+(state on NFS) can both be freely rescheduled. **Postgres is the only service
+that still requires pinning.** Moving it to an external host removes the single
+point of failure entirely, and FerretDB can stay on the Swarm so port 27017 is
+never exposed beyond the overlay network.
+
 ## Rotating the Postgres Password
 
 `POSTGRES_PASSWORD` is only consulted when the Postgres entrypoint initialises
