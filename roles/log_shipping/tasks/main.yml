@@ -1,0 +1,4 @@
+---
+- name: Reconcile log shipping when enabled
+  ansible.builtin.include_tasks: enabled.yml
+  when: log_shipping_enabled | bool

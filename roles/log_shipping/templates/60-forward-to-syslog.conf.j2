@@ -1,0 +1,23 @@
+# Managed by Ansible. Forward all logs to the central syslog receiver.
+#
+# journald forwards to /dev/log, rsyslog picks it up here and relays it on.
+# No local file rules are added: DietPi RAMlog already caps /var/log, and the
+# durable copy is the remote one.
+
+# RSYSLOG_SyslogProtocol23Format is RFC5424, the "IETF" format the receiver
+# expects. The rsyslog default is the older RFC3164, which the receiver would
+# parse incorrectly.
+#
+# Bound, in-memory queue. Never spill to disk: that would write to the eMMC.
+action(
+  type="omfwd"
+  target="{{ log_shipping_server }}"
+  port="{{ log_shipping_port }}"
+  protocol="{{ log_shipping_protocol }}"
+  template="RSYSLOG_SyslogProtocol23Format"
+  queue.type="LinkedList"
+  queue.size="{{ log_shipping_queue_size }}"
+  queue.saveOnShutdown="off"
+  action.resumeRetryCount="-1"
+  action.resumeInterval="10"
+)

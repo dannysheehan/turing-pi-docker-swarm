@@ -1,0 +1,23 @@
+---
+# Forward the journal off-node to a central syslog receiver.
+#
+# DietPi RAMlog keeps /var/log on a 50MB tmpfs to spare the eMMC, which is why
+# nothing survived the tpi-mgr-01 hang. Persisting locally would fight that
+# design for little gain: journald writes tens of MB/day against the ~6.5GB/day
+# the database already writes, so RAMlog is protecting well under 1% of the
+# write volume while costing all post-mortem evidence.
+#
+# Forwarding is strictly better than local persistence for diagnosing a hang:
+# it adds no local writes, and messages that already left the node survive the
+# node dying outright.
+log_shipping_enabled: false
+log_shipping_server: "{{ nfs_server }}"
+log_shipping_port: 512
+# The queue is deliberately in-memory: a disk-assisted queue would write to
+# the eMMC, which is the thing RAMlog exists to avoid.
+#
+# UDP is what the receiver is configured for. It is fire-and-forget, so a
+# message lost in the final moments of a hang is possible -- but the run-up,
+# which is what diagnosis actually needs, still arrives.
+log_shipping_protocol: udp
+log_shipping_queue_size: 10000
