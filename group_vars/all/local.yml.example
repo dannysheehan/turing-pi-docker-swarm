@@ -13,9 +13,6 @@ nfs_export: /replace/with/nfs/export
 # Central syslog receiver for node log forwarding (RFC5424 / UDP).
 log_shipping_server: nas.home.example.com
 
-portainer_database_secret_reference: op://Automation/Portainer/database-key
-portainer_backup_secret_reference: op://Automation/Portainer/backup-passphrase
-
 # Public hostnames served by Traefik. komodo_host is derived from komodo_domain.
 traefik_domain: traefik.home.example.com
 komodo_domain: komodo.home.example.com

@@ -96,7 +96,6 @@
     path: "{{ item }}"
   loop:
     - "{{ nfs_mount }}/backups"
-    - "{{ nfs_mount }}/backups/portainer"
     - "{{ nfs_mount }}/backups/swarm"
   register: nfs_common_backup_directories
 

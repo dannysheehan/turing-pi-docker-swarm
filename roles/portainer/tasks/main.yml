@@ -1,4 +1,0 @@
----
-- name: Reconcile Portainer when enabled
-  ansible.builtin.include_tasks: enabled.yml
-  when: portainer_enabled | bool

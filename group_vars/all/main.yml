@@ -23,30 +23,9 @@ docker_dietpi_software_ids:
 docker_data_root: /mnt/dietpi_userdata/docker-data
 docker_engine_version: 29.7.2
 
-# Portainer (deployed by 04-services / portainer role)
-portainer_version: 2.39.6
-portainer_primary_manager: "{{ swarm_primary_manager }}"
-portainer_data_dir: /mnt/dietpi_userdata/portainer-data
-portainer_https_port: 9443
-portainer_database_secret_name: portainer_database_key  # pragma: allowlist secret
-portainer_backup_passphrase: >-
-  {{
-    lookup('community.general.onepassword', portainer_backup_secret_reference)
-    | b64encode | b64decode
-  }}
-# One-time acknowledgement for encrypting an existing plaintext database.
-portainer_database_encryption_confirm: false
-portainer_admin_username: admin
-portainer_admin_password: "{{ vault_portainer_admin_password | default('') }}"
-# true only on a fresh install (then run 06-portainer-setup.yml)
-portainer_auto_setup: false
-
 # Shared NFS storage (mounted once per manager, apps bind subdirs).
 nfs_mount: /srv/nfs
 nfs_opts: "vers=3,hard,proto=tcp,timeo=600,retrans=2,_netdev,nofail,x-systemd.automount"
-portainer_backup_retention_days: 14
-portainer_backup_hour: 3
-portainer_backup_minute: 30
 backup_passphrase: "{{ vault_backup_passphrase | default('') }}"
 
 # Central log forwarding. RAMlog keeps /var/log in RAM, so the durable copy of

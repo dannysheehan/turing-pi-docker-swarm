@@ -1,4 +1,4 @@
-.PHONY: setup validate versions inventory syntax lint scripts secrets portainer-restart portainer-setup-token
+.PHONY: setup validate versions inventory syntax lint scripts secrets
 
 UV_RUN := uv run --frozen
 
@@ -28,14 +28,9 @@ lint:
 	$(UV_RUN) ansible-lint --offline
 
 scripts:
-	bash -n scripts/portainer-setup-token
 	$(UV_RUN) python -m py_compile scripts/check-secrets
 
 secrets:
 	$(UV_RUN) python scripts/check-secrets
 
-portainer-restart:
-	$(UV_RUN) ansible-playbook 99-portainer-restart.yml --ask-vault-pass
 
-portainer-setup-token:
-	@./scripts/portainer-setup-token

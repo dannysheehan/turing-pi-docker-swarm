@@ -94,7 +94,6 @@
     argv: "{{ item }}"
   loop:
     - [/usr/sbin/iptables, -C, INPUT, -j, ANSIBLE-INPUT]
-    - [/usr/sbin/iptables, -C, DOCKER-USER, -j, ANSIBLE-PORTAINER]
     - [/usr/sbin/ip6tables, -C, INPUT, -j, ANSIBLE-INPUT]
   register: swarm_firewall_jump_checks
   changed_when: false
@@ -115,7 +114,6 @@
     argv: "{{ item }}"
   loop:
     - [/usr/sbin/iptables, -C, INPUT, -j, ANSIBLE-INPUT]
-    - [/usr/sbin/iptables, -C, DOCKER-USER, -j, ANSIBLE-PORTAINER]
     - [/usr/sbin/ip6tables, -C, INPUT, -j, ANSIBLE-INPUT]
   changed_when: false
 
