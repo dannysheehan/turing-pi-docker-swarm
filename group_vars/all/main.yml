@@ -49,6 +49,14 @@ portainer_backup_hour: 3
 portainer_backup_minute: 30
 backup_passphrase: "{{ vault_backup_passphrase | default('') }}"
 
+# Central log forwarding. RAMlog keeps /var/log in RAM, so the durable copy of
+# a node's logs is the one on the syslog receiver. Without this, a node that
+# hangs takes all its evidence with it -- which is exactly what happened to
+# tpi-mgr-01 on 2026-08-29.
+log_shipping_enabled: true
+log_shipping_port: 512
+log_shipping_protocol: udp
+
 os_maintenance_patches: true
 os_maintenance_reboot: true
 keepalived_interface: eth0
@@ -108,6 +116,25 @@ komodo_pg_password_secret_name: komodo_pg_password  # pragma: allowlist secret
 komodo_ferretdb_url_secret_name: komodo_ferretdb_url  # pragma: allowlist secret
 # Sized for a cold pull of the ~479MB Postgres image plus first-time
 # DocumentDB install on a CM3+: 120 x 5s = 10 minutes.
+# Which node runs the Komodo control plane. Postgres data and Core's key
+# material are node-local bind mounts, so all three services must be pinned to
+# one node. Making it a variable turns failover into a one-line change plus a
+# redeploy instead of a template edit.
+#
+# Failing over does NOT move the database: PGDATA lives on the old node's
+# eMMC. Restore from the latest backup after pointing this at a new node.
+komodo_db_node: "{{ swarm_primary_manager }}"
+
+# Komodo's native scheduled backup (the "Backup Core Database" procedure)
+# writes to /backups in the Core container. That is mounted from the NAS so a
+# backup survives total loss of the node holding the database. Dump files need
+# no particular ownership, which matters because the export uses root_squash.
+komodo_backups_nfs_server: "{{ nfs_server }}"
+komodo_backups_nfs_path: "{{ nfs_export }}/backups/komodo"
+# NFSv4 is not enabled on the NAS, so v3 it is. `hard` is the one option
+# PostgreSQL actually requires and is good practice for any database payload.
+komodo_backups_nfs_opts: "nfsvers=3,hard,proto=tcp,timeo=600,retrans=2"
+
 komodo_db_readiness_retries: 120
 komodo_db_readiness_delay: 5
 

@@ -1,0 +1,59 @@
+---
+- name: Validate log shipping inputs
+  ansible.builtin.assert:
+    that:
+      - log_shipping_server | length > 0
+      - log_shipping_port | int > 0
+      - log_shipping_protocol in ['tcp', 'udp']
+    fail_msg: >-
+      Log shipping requires a receiver address, a valid port, and either the
+      tcp or udp protocol.
+
+- name: Install rsyslog
+  ansible.builtin.apt:
+    name: rsyslog
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# DietPi ships no default rsyslog rules and RAMlog caps /var/log, so the only
+# rule installed here is the forwarder.
+- name: Configure the syslog forwarder
+  ansible.builtin.template:
+    src: 60-forward-to-syslog.conf.j2
+    dest: /etc/rsyslog.d/60-forward-to-syslog.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: rsyslogd -N1 -f %s
+  notify: Restart rsyslog
+
+- name: Ensure the journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure journald hands messages to the syslog socket
+  ansible.builtin.template:
+    src: 99-forward-to-syslog.conf.j2
+    dest: /etc/systemd/journald.conf.d/99-forward-to-syslog.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Enable and start rsyslog
+  ansible.builtin.systemd_service:
+    name: rsyslog.service
+    enabled: true
+    state: started
+
+- name: Verify rsyslog is active
+  ansible.builtin.systemd_service:
+    name: rsyslog.service
+  register: log_shipping_service
+  changed_when: false
+  failed_when: log_shipping_service.status.ActiveState != 'active'

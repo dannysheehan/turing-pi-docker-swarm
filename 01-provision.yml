@@ -2,11 +2,28 @@
 - name: Provision base node configuration
   hosts: cluster
   gather_facts: true
+  tags: [provision]
   tasks:
+    # `apply` is required: a tag on include_role selects the include itself,
+    # but the role's own tasks do not inherit it and are filtered out. Without
+    # this the play reports success having run nothing at all.
     - name: Validate DietPi node prerequisites
       ansible.builtin.include_role:
         name: dietpi_preflight
+        apply:
+          tags: [preflight]
+      tags: [preflight]
 
     - name: Reconcile DietPi node configuration
       ansible.builtin.include_role:
         name: dietpi_base
+        apply:
+          tags: [base]
+      tags: [base]
+
+    - name: Forward node logs to the central syslog receiver
+      ansible.builtin.include_role:
+        name: log_shipping
+        apply:
+          tags: [logging]
+      tags: [logging]
