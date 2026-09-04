@@ -18,9 +18,14 @@ traefik_domain: traefik.home.example.com
 komodo_domain: komodo.home.example.com
 traefik_acme_email: admin@example.com
 
-# Komodo database (FerretDB over Postgres). The password is embedded verbatim
-# in the FerretDB postgres:// URL, so it must be 20-128 alphanumeric characters
-# with no symbols or whitespace.
+# Komodo database: FerretDB in the Swarm, over an external PostgreSQL host that
+# carries the DocumentDB extension. The DBA owns that host and must have
+# installed the extension in komodo_pg_database and granted komodo_db_user
+# membership of documentdb_admin_role.
+komodo_pg_host: 192.0.2.99
+
+# The password is embedded verbatim in the FerretDB postgres:// URL, so it must
+# be 20-128 alphanumeric characters with no symbols or whitespace.
 komodo_pg_password_secret_reference: op://Turing-Pi/Komodo/postgres-password
 komodo_admin_username_secret_reference: op://Turing-Pi/Komodo/admin-username
 komodo_admin_password_secret_reference: op://Turing-Pi/Komodo/admin-password

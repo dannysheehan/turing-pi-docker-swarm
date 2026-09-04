@@ -21,13 +21,15 @@
       - komodo_secret_values.admin_password | length >= 20
       - komodo_secret_values.jwt_secret | length >= 32
       - komodo_db_user is match('^[a-z_][a-z0-9_]{2,62}$')
-      - not (komodo_pg_image is search(':latest$'))
+      - komodo_pg_host != 'change-me.example.com'
+      - komodo_pg_port | int > 0
+      - komodo_pg_database is match('^[a-zA-Z_][a-zA-Z0-9_]{0,62}$')
       - not (komodo_ferretdb_image is search(':latest$'))
       - not (komodo_image is search(':latest$'))
     fail_msg: >-
-      Komodo requires an explicit domain, valid op:// secret references, a
-      lowercase Postgres role name, and pinned Postgres, FerretDB, and Core
-      image tags.
+      Komodo requires an explicit domain, an external Postgres host, valid
+      op:// secret references, a lowercase Postgres role name, and pinned
+      FerretDB and Core image tags.
 
 - name: Validate the Postgres password for safe URL embedding
   ansible.builtin.assert:
@@ -45,7 +47,8 @@
 - name: Compose the FerretDB Postgres connection URL
   ansible.builtin.set_fact:
     komodo_ferretdb_url_value: >-
-      postgres://{{ komodo_db_user }}:{{ komodo_secret_values.pg_password }}@postgres:5432/postgres
+      postgres://{{ komodo_db_user }}:{{ komodo_secret_values.pg_password
+      }}@{{ komodo_pg_host }}:{{ komodo_pg_port }}/{{ komodo_pg_database }}
   no_log: true
 
 - name: Synchronize Komodo database and application secrets into Swarm
@@ -81,26 +84,6 @@
     owner: root
     group: root
     mode: "0750"
-
-- name: Create Komodo persistent configuration directory
-  ansible.builtin.file:
-    path: "{{ komodo_config_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0750"
-
-# PGDATA must be owned by the in-image postgres user. Creating it as root works
-# on the very first run (the entrypoint chowns an empty directory), but on every
-# subsequent converge a root-owned directory silently breaks an already
-# initialised cluster: the server can no longer traverse into its own data.
-- name: Create the Komodo Postgres data directory
-  ansible.builtin.file:
-    path: "{{ komodo_pg_data_dir }}"
-    state: directory
-    owner: "{{ komodo_pg_uid }}"
-    group: "{{ komodo_pg_gid }}"
-    mode: "0700"
 
 - name: Render Komodo stack
   ansible.builtin.template:

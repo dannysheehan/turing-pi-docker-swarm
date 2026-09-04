@@ -14,7 +14,10 @@ dietpi_ramlog_size_mb: 50
 dietpi_min_root_free_mb: 512
 
 swarm_vip_prefix: 24
-swarm_primary_manager: tpi-mgr-01
+# Must match the single host in the primary_manager inventory group. Moved off
+# tpi-mgr-01 on 2026-09-04 when its storage failed; move both back together
+# once that node is repaired.
+swarm_primary_manager: tpi-mgr-02
 swarm_autolock: false
 
 docker_dietpi_software_ids:
@@ -64,57 +67,54 @@ komodo_disable_user_registration: true
 komodo_admin_username_secret_name: komodo_admin_username  # pragma: allowlist secret
 komodo_admin_password_secret_name: komodo_admin_password  # pragma: allowlist secret
 komodo_jwt_secret_name: komodo_jwt_secret  # pragma: allowlist secret
-komodo_config_dir: /mnt/dietpi_userdata/komodo-config
 komodo_admin_username_secret_reference: op://Turing-Pi/Komodo/admin-username  # pragma: allowlist secret
 komodo_admin_password_secret_reference: op://Turing-Pi/Komodo/admin-password  # pragma: allowlist secret
 komodo_jwt_secret_reference: op://Turing-Pi/Komodo/jwt-secret  # pragma: allowlist secret
 
-# Database tier: FerretDB v2 (MongoDB wire protocol) over Postgres 17 +
-# the DocumentDB extension.
+# Database tier: FerretDB v2 (MongoDB wire protocol) over an external
+# PostgreSQL host carrying the DocumentDB extension.
 #
 # These nodes are Raspberry Pi CM3+ (Cortex-A53, ARMv8-A). MongoDB 5.0+ needs
 # ARMv8.2-A LSE atomics, which this CPU does not implement, so stock MongoDB
 # is permanently stuck at the end-of-life 4.4 series here. FerretDB is the
-# upstream-documented path for hosts that cannot run current MongoDB, and it
-# replaces the three-member Mongo replica set with a single Postgres instance.
+# upstream-documented path for hosts that cannot run current MongoDB.
 #
-# Keep the pair version-matched: the postgres-documentdb tag names the FerretDB
-# release it belongs with. Upstream warns that updates between them can break.
-komodo_pg_image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0@sha256:2386795ec2aa7ae559304361979f1dc5708d383ee9020ae63dadc2940dfe58f7
+# The database used to run as a Swarm service on one node's eMMC. That forced
+# every Komodo service to be pinned to that node, and when its storage failed
+# the tasks sat Pending against six healthy nodes they were not allowed to use.
+# Moving Postgres off the cluster removed both the pinning and the single point
+# of failure, and freed roughly a third of a 1GB node's memory.
 komodo_ferretdb_image: ghcr.io/ferretdb/ferretdb:2.7.0@sha256:5706414241eb84f0515512c37b46db0f1b1eac9e5ceb7e4c2523211c184b1985
-komodo_pg_data_dir: /mnt/dietpi_userdata/komodo-postgres
-# The Postgres image runs as postgres (uid/gid 999); PGDATA must stay
-# owned by it or the server cannot traverse its own data directory.
-komodo_pg_uid: 999
-komodo_pg_gid: 999
+# The FerretDB image is distroless and runs as ferretdb:ferretdb (uid/gid 1000),
+# so a root-owned secret would be unreadable to it.
 komodo_ferretdb_uid: 1000
 komodo_ferretdb_gid: 1000
+# komodo_pg_host lives in the ignored local.yml: it is deployment-specific.
+komodo_pg_port: 5432
+komodo_pg_database: postgres
 komodo_db_user: komodo_user
 komodo_database_db_name: komodo
 komodo_pg_password_secret_name: komodo_pg_password  # pragma: allowlist secret
 komodo_ferretdb_url_secret_name: komodo_ferretdb_url  # pragma: allowlist secret
-# Sized for a cold pull of the ~479MB Postgres image plus first-time
-# DocumentDB install on a CM3+: 120 x 5s = 10 minutes.
-# Which node runs the Komodo control plane. Postgres data and Core's key
-# material are node-local bind mounts, so all three services must be pinned to
-# one node. Making it a variable turns failover into a one-line change plus a
-# redeploy instead of a template edit.
-#
-# Failing over does NOT move the database: PGDATA lives on the old node's
-# eMMC. Restore from the latest backup after pointing this at a new node.
-komodo_db_node: "{{ swarm_primary_manager }}"
 
 # Komodo's native scheduled backup (the "Backup Core Database" procedure)
 # writes to /backups in the Core container. That is mounted from the NAS so a
-# backup survives total loss of the node holding the database. Dump files need
+# backup survives total loss of the node running the service. Dump files need
 # no particular ownership, which matters because the export uses root_squash.
 komodo_backups_nfs_server: "{{ nfs_server }}"
 komodo_backups_nfs_path: "{{ nfs_export }}/backups/komodo"
-# NFSv4 is not enabled on the NAS, so v3 it is. `hard` is the one option
-# PostgreSQL actually requires and is good practice for any database payload.
+# NFSv4 is not enabled on the NAS, so v3 it is. `hard` is good practice for any
+# payload that must not silently return short reads.
 komodo_backups_nfs_opts: "nfsvers=3,hard,proto=tcp,timeo=600,retrans=2"
 
-komodo_db_readiness_retries: 120
+# Core's /config holds the Noise keypair every enrolled Periphery agent
+# authenticates against. On NFS rather than a node so Swarm can reschedule Core
+# anywhere without regenerating the identity and breaking every agent.
+komodo_config_nfs_server: "{{ nfs_server }}"
+komodo_config_nfs_path: "{{ nfs_export }}/komodo-config"
+komodo_config_nfs_opts: "nfsvers=3,hard,proto=tcp,timeo=600,retrans=2"
+
+komodo_db_readiness_retries: 60
 komodo_db_readiness_delay: 5
 
 komodo_periphery_enabled: true

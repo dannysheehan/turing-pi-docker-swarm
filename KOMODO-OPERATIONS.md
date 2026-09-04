@@ -85,84 +85,208 @@ cid=$(docker ps --quiet --filter 'name=komodo_komodo-core\.1\.' | head -n1)
 docker exec "$cid" ls /backups
 ```
 
-Restore with `km db restore`, selecting a dated folder.
+### Restoring
 
-## Single-Node Placement and Failover
+`km database restore` in Komodo 2.3.2 **ignores the database configuration it
+is given**. It always connects to `localhost:27017` with no credentials, no
+matter what `KOMODO_DATABASE_ADDRESS`, `KOMODO_DATABASE_URI`, or a
+`komodo.cli.toml` `[database]` table says — `km config` resolves those settings
+correctly, and then the subcommand does not use them. Against an authenticated
+FerretDB it fails with:
 
-Postgres data and Core's Noise keypair are node-local bind mounts, so all
-three services are pinned to `komodo_db_node` (default: the primary manager).
-This is a deliberate single point of failure: shared storage plus automatic
-rescheduling risks two Postgres instances writing one data directory during a
-network partition, which corrupts the database.
+```text
+Command createIndexes requires authentication
+```
 
-If the pinned node is lost, Komodo stops entirely and Swarm reports the tasks
-as `Pending` with `no suitable node (scheduling constraints not satisfied)`.
-The rest of the cluster is unaffected: the Swarm keeps quorum on the remaining
-managers, Traefik keeps serving, and Keepalived moves the VIP.
+The way through is to give it exactly the endpoint it insists on: a throwaway
+FerretDB with authentication disabled, reachable only inside its own container
+network namespace, destroyed as soon as the restore finishes. Nothing is
+exposed on the database side, because that FerretDB still authenticates to
+PostgreSQL as `komodo_user` through its own connection URL.
 
-To fail over, point `komodo_db_node` at another manager and re-run the
-`database` tag. **This does not move the database.** PGDATA stays on the old
-node, so the new instance initialises empty and Komodo comes up with no
-Servers or Swarm. Restore from the latest NAS backup, or re-run onboarding.
+Run this from a healthy manager, with the backups export mounted at `/backups`
+and `$PW` set to the `postgres-password` value:
 
-Recovering the original node is therefore preferable whenever it is possible.
+```sh
+docker run -d --name restore-ferretdb \
+  -e FERRETDB_AUTH=false \
+  -e FERRETDB_POSTGRESQL_URL="postgres://komodo_user:${PW}@<db-host>:5432/postgres" \
+  ghcr.io/ferretdb/ferretdb:2.7.0
+
+docker run --rm --network container:restore-ferretdb \
+  -v /backups:/backups:ro \
+  -e KOMODO_CLI_BACKUPS_FOLDER=/backups \
+  --entrypoint /usr/local/bin/km \
+  ghcr.io/moghtech/komodo-core:2.3.2 \
+  database restore -r 2026-09-02_01-00-01 -y
+
+docker rm -f restore-ferretdb
+```
+
+Omit `-r` to restore the most recent folder. Scale `komodo-core` to 0 first if
+the stack is running, so Core does not write while the restore is in progress.
+
+A successful run reports a line per collection:
+
+```text
+[User]: Restored 1 items
+[Server]: Restored 7 items
+[Stats]: Restored 189289 items
+Finished restoring database ✅
+```
+
+## Placement: Nothing Is Pinned
+
+Neither service carries a placement constraint. FerretDB is stateless and
+Core's key material lives on NFS, so Swarm may schedule either anywhere in the
+cluster and reschedule it after a node failure without operator involvement.
+
+This was not always true, and the reason it changed is worth recording.
+
+Until 2026-09-04 the database ran as a Swarm service on one node's eMMC. PGDATA
+is node-local, so `postgres`, `ferretdb` and `komodo-core` were all pinned to
+`komodo_db_node`. On 2026-09-04 that node's storage failed: the kernel and
+network stack stayed up — it answered ICMP and dropbear kept accepting TCP on
+22 — but every read from disk failed, so SSH key authentication was refused and
+the Docker heartbeat stopped. Swarm marked the node `Down` and reported:
+
+```text
+no suitable node (scheduling constraints not satisfied on 6 nodes;
+1 node not available for new tasks)
+```
+
+Komodo was down for hours against six healthy nodes it was not permitted to
+use, and the scheduled backup had not run since 2026-09-02.
+
+The fix was to move PostgreSQL off the cluster entirely. See below.
+
+### Unpinning exposed an encrypted-overlay firewall gap
+
+`komodo_back` is created with `--opt encrypted`. Docker does not carry an
+encrypted overlay's data plane over udp/4789 between nodes; it wraps it in
+**IPsec ESP (IP protocol 50)**. The firewall allowed 2377, 7946 and 4789 but
+had no ESP rule, so the moment Core and FerretDB landed on different nodes the
+data plane was silently dropped while DNS kept resolving over the 7946 control
+plane. The symptom is distinctive:
+
+```text
+DNS ferretdb  -> 10.0.2.64        (resolves fine)
+TCP  ferretdb:27017 -> CLOSED     (data plane dropped)
+ping 10.0.2.12 (task IP) -> FAIL  (but the underlay pings fine)
+```
+
+and Core exits with:
+
+```text
+FATAL: Failed to initialize database::Client | Server selection timeout:
+No available servers. Topology: { Servers: [ { Address: ferretdb:27017 } ] }
+```
+
+`roles/swarm_firewall` now emits `-p esp -j ACCEPT` for every cluster peer. The
+gap had been latent since the network was created — it could not surface while
+every service on that network was pinned to one node.
+
+To check the rule is present:
+
+```sh
+sudo iptables -S ANSIBLE-INPUT | grep esp
+```
+
+### Core's identity changes if /config is lost
+
+Core generates a fresh Noise keypair when `/config/keys/core.key` is missing,
+and Periphery **pins** the Core key it first saw, in
+`/etc/komodo/keys/core.pub`. After a Core identity change every agent refuses
+to log in:
+
+```text
+Periphery failed to validate Core public key: ... is invalid
+```
+
+Recovery is to delete `/etc/komodo/keys` on each agent and restart `periphery`.
+The agent then generates a new keypair, learns the new Core key, and presents
+itself for approval; Core records the offered key as `attempted_public_key` and
+rejects the login until an admin approves it. Approve with
+`UpdateServerPublicKey` — **after** confirming the offered key matches what the
+agent actually holds on disk:
+
+```sh
+sudo cat /etc/komodo/keys/periphery.pub   # compare to attempted_public_key
+```
+
+Note this is a mutual mismatch after a restore: agents rotate their own keys on
+a schedule (`auto_rotate_keys`), so a backup older than the last rotation also
+holds stale Periphery keys. Fixing only one direction is not enough.
 
 ## Storage Layout and Why It Is What It Is
 
 | What | Where | Why |
 |---|---|---|
-| Postgres data | node-local eMMC bind mount | forced: see below |
-| Core `/config` (Noise keypair) | node-local bind mount today; **NFS works** | proven, see below |
-| Backups | NFS on the NAS | must survive loss of the node holding the database |
+| PostgreSQL data | external host, DBA-owned | removes the single point of failure |
+| Core `/config` (Noise keypair) | NFS on the NAS | lets Core reschedule without losing its identity |
+| Backups | NFS on the NAS | must survive total loss of any one node |
 
-**Postgres cannot live on the NAS.** PGDATA must be owned by the in-image
-postgres user (uid 999, mode 0700) and PostgreSQL refuses to run as root. The
-NFS export accepts writes from uid 0 only: uid 999, 1000, 1024 and 1026 are all
-denied even on a 0777 directory, because the NAS applies its own access control
-on top of POSIX permissions. Those two facts are mutually exclusive, so the
-database stays on local storage and its services stay pinned to
-`komodo_db_node`.
+**PostgreSQL could not live on the NAS, which is why it left the cluster.**
+PGDATA must be owned by the in-image postgres user (uid 999, mode 0700) and
+PostgreSQL refuses to run as root. The NFS export accepts writes from uid 0
+only: uid 999, 1000, 1024 and 1026 are all denied even on a 0777 directory,
+because the NAS applies its own access control on top of POSIX permissions.
+Those two facts are mutually exclusive. With no shared-storage option, the
+database either pinned the control plane to one node or moved off the cluster.
 
 Backups work precisely because Komodo Core runs as **root** in its container,
 and root is the one uid the export accepts.
 
 **Core `/config` on NFS is proven to work.** Verified on 2026-08-29: Core
-starts with its keypair on an `nfsvers=4` volume, writes `core.key` and
-`core.pub` as `0600` owned `0:0`, and reports the **same public key after a
-restart**. That last point is what matters, because Periphery agents pin Core's
-public key and would reject a Core that returned with a fresh identity.
+starts with its keypair on an NFS volume, writes `core.key` and `core.pub` as
+`0600` owned `0:0`, and reports the **same public key after a restart**. That
+last point is what matters, because a Core that returned with a fresh identity
+would have to re-enroll every Periphery agent.
 
 This depends on `root_squash` being disabled on the export. If squashing is
 re-enabled the files become owned by the mapped uid; Core would be squashed to
 the same uid so it would probably still match, but that combination is
 untested.
 
-The consequence: `ferretdb` (stateless, telemetry only) and `komodo-core`
-(state on NFS) can both be freely rescheduled. **Postgres is the only service
-that still requires pinning.** Moving it to an external host removes the single
-point of failure entirely, and FerretDB can stay on the Swarm so port 27017 is
-never exposed beyond the overlay network.
+## The External Database
+
+FerretDB stays on the Swarm, so port 27017 is never exposed beyond the overlay
+network. Only FerretDB talks to PostgreSQL, over `komodo_pg_host:5432`.
+
+Note that `komodo_pg_database` (default `postgres`) and
+`komodo_database_db_name` (default `komodo`) are different things. FerretDB
+maps every MongoDB database it serves into a single PostgreSQL database, so
+`postgres` is the PostgreSQL database carrying the DocumentDB extension and
+`komodo` is the MongoDB-level name Core uses inside it.
+
+Two prerequisites belong to whoever owns the database host. The role asserts
+them indirectly — FerretDB will not start without them — but cannot create
+them:
+
+- the DocumentDB extension installed in `komodo_pg_database`
+- `komodo_db_user` granted **`documentdb_admin_role`**
+
+Role membership is required, not individual table grants. DocumentDB creates a
+table per collection at runtime, so any grant enumerated ahead of time is
+correct until Komodo creates its next collection and then fails with
+`permission denied for table ...`.
 
 ## Rotating the Postgres Password
 
-`POSTGRES_PASSWORD` is only consulted when the Postgres entrypoint initialises
-an empty data directory. Changing the 1Password value on a running cluster
-therefore rotates the Swarm secret and the FerretDB connection URL, but **not**
-the password inside the existing database, and Komodo Core will fail to
-authenticate on its next restart.
+The password is embedded verbatim in the FerretDB `postgres://` URL, so it must
+be 20-128 alphanumeric characters — reserved URL characters would corrupt the
+connection string, and the role asserts this.
 
-To rotate safely, change it inside Postgres first, then let Ansible catch up:
+Change it on the database host first, then let Ansible catch up. On the
+external host, as a superuser:
 
-```sh
-cid=$(docker ps --quiet --filter 'name=komodo_postgres\.1\.' | head -n1)
-docker exec -it "$cid" psql -U komodo_user -d postgres \
-  -c "ALTER ROLE komodo_user WITH PASSWORD '<new-value>';"  # pragma: allowlist secret
+```sql
+ALTER ROLE komodo_user WITH PASSWORD '<new-value>';  -- pragma: allowlist secret
 ```
 
 Then update `postgres-password` in 1Password to the same value and re-run the
-`database` tag. The value must be 20-128 alphanumeric characters: it is
-embedded verbatim in the FerretDB `postgres://` URL, so reserved URL
-characters would corrupt the connection string. The role asserts this.
+`database` tag. Ansible rotates the Swarm secret and the FerretDB URL, and
+FerretDB restarts against the new credentials.
 
 ## Onboarding Keys
 

@@ -1,10 +1,30 @@
 ---
-# FerretDB replaces the three-member Mongo replica set, so there is no replica
-# set to initiate. What must be waited on instead is the DocumentDB extension:
-# the Postgres image installs it from /docker-entrypoint-initdb.d on first
-# start, and FerretDB cannot serve the MongoDB wire protocol until it exists.
+# The database is external and owned by the DBA, so there is no local Postgres
+# container to exec into and no first-time DocumentDB install to wait on. What
+# has to be proven instead is that the host is reachable from the Swarm, that
+# FerretDB accepted its connection, and that Core came up against it.
 
-- name: Wait for the Komodo database services to reach running state
+# block/rescue rather than failed_when/assert: `failed_when: false` would force
+# the registered result's `failed` to False, so a reachability assert built on
+# it could never fire.
+- name: Verify the external Postgres host is reachable from the Swarm
+  block:
+    - name: Wait for the external Postgres port
+      ansible.builtin.wait_for:
+        host: "{{ komodo_pg_host }}"
+        port: "{{ komodo_pg_port | int }}"
+        timeout: 30
+        state: started
+  rescue:
+    - name: Report an unreachable external database
+      ansible.builtin.fail:
+        msg: >-
+          {{ komodo_pg_host }}:{{ komodo_pg_port }} is not reachable from
+          {{ inventory_hostname }}. Komodo cannot start without it. Check the
+          database host, its firewall, and that PostgreSQL is listening on an
+          address the cluster can reach.
+
+- name: Wait for the Komodo services to reach running state
   ansible.builtin.command:
     argv:
       - /usr/bin/docker
@@ -16,66 +36,22 @@
       - --format
       - "{{ '{{.CurrentState}}' }}"
   loop:
-    - postgres
     - ferretdb
-  register: komodo_db_service_check
-  changed_when: false
-  retries: "{{ komodo_db_readiness_retries }}"
-  delay: "{{ komodo_db_readiness_delay }}"
-  until: komodo_db_service_check.stdout is search('^Running')
-
-- name: Wait for Postgres to accept connections
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/bash
-      - -lc
-      - |
-        set -euo pipefail
-        cid=$(
-          /usr/bin/docker ps --quiet \
-            --filter "name={{ komodo_stack_name }}_postgres\.1\." \
-            | /usr/bin/head -n1
-        )
-        [ -n "$cid" ] || { echo "postgres container not found"; exit 1; }
-        /usr/bin/docker exec "$cid" pg_isready -U {{ komodo_db_user }} -d postgres
-  register: komodo_pg_ready
+    - komodo-core
+  register: komodo_service_check
   changed_when: false
   failed_when: false
   retries: "{{ komodo_db_readiness_retries }}"
   delay: "{{ komodo_db_readiness_delay }}"
-  until: komodo_pg_ready.rc == 0
+  until: komodo_service_check.stdout is search('^Running')
 
-- name: Wait for the DocumentDB extension to finish installing
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/bash
-      - -lc
-      - |
-        set -euo pipefail
-        cid=$(
-          /usr/bin/docker ps --quiet \
-            --filter "name={{ komodo_stack_name }}_postgres\.1\." \
-            | /usr/bin/head -n1
-        )
-        [ -n "$cid" ] || { echo "postgres container not found"; exit 1; }
-        n=$(
-          /usr/bin/docker exec "$cid" psql -U {{ komodo_db_user }} -d postgres -tAc \
-            "SELECT count(*) FROM pg_extension WHERE extname = 'documentdb';"
-        )
-        [ "${n:-0}" -ge 1 ]
-  register: komodo_documentdb_ready
-  changed_when: false
-  failed_when: false
-  retries: "{{ komodo_db_readiness_retries }}"
-  delay: "{{ komodo_db_readiness_delay }}"
-  until: komodo_documentdb_ready.rc == 0
-
-- name: Require a usable Komodo database tier
+- name: Require both Komodo services to be running
   ansible.builtin.assert:
     that:
-      - komodo_pg_ready.rc == 0
-      - komodo_documentdb_ready.rc == 0
+      - komodo_service_check.results | rejectattr('stdout', 'search', '^Running') | list | length == 0
     fail_msg: >-
-      Postgres did not become ready, or the DocumentDB extension was never
-      installed. Inspect `docker service logs {{ komodo_stack_name }}_postgres`
-      before deploying Komodo Core against this database.
+      FerretDB or Komodo Core never reached Running state. The usual cause is a
+      database prerequisite the DBA owns: the DocumentDB extension must be
+      installed in the '{{ komodo_pg_database }}' database, and
+      '{{ komodo_db_user }}' must be a member of documentdb_admin_role.
+      Inspect `docker service logs {{ komodo_stack_name }}_ferretdb`.
