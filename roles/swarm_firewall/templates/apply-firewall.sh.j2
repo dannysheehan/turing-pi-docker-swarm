@@ -15,6 +15,13 @@ ${IPT} -A ANSIBLE-INPUT -p tcp -s {{ admin_cidr }} --dport 22 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p tcp --dport 7946 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 7946 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 4789 -j ACCEPT
+# An overlay network created with `--opt encrypted` -- komodo_back is one --
+# does not put VXLAN on udp/4789 between nodes. Docker wraps it in IPsec ESP
+# (IP protocol 50) instead, so without this rule the data plane is silently
+# dropped while DNS keeps resolving over the 7946 control plane. That failure
+# stayed hidden for as long as every service on the encrypted network was
+# pinned to a single node and no traffic ever crossed a node boundary.
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p esp -j ACCEPT
 {% endif %}
 {% endfor %}
 {% if inventory_hostname in groups['managers'] %}
