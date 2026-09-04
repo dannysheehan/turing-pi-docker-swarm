@@ -117,13 +117,25 @@
     - [/usr/sbin/ip6tables, -C, INPUT, -j, ANSIBLE-INPUT]
   changed_when: false
 
+# Probe peers that are actually part of this run.
+#
+# `--limit` filters which hosts a play runs on, but it does not filter
+# `groups[...]`. Selecting a probe straight from the group therefore picks
+# excluded hosts too -- and the host most likely to be excluded is a failed
+# one, so the verification fails against a node the operator deliberately
+# left out. `ansible_play_hosts_all` is the post-limit host list; the `_all`
+# variant is required because this play runs `serial: 1`, which would
+# otherwise narrow the list to the single host in the current batch.
 - name: Select firewall peer probes
   ansible.builtin.set_fact:
     swarm_firewall_manager_probe: >-
-      {{ (groups['managers'] | reject('equalto', inventory_hostname) | list | first)
-         if inventory_hostname in groups['managers'] else swarm_primary_manager }}
+      {{ groups['managers'] | select('in', ansible_play_hosts_all)
+         | reject('equalto', inventory_hostname) | list | first
+         | default('', true) }}
     swarm_firewall_gossip_probe: >-
-      {{ groups['cluster'] | reject('equalto', inventory_hostname) | list | first }}
+      {{ groups['cluster'] | select('in', ansible_play_hosts_all)
+         | reject('equalto', inventory_hostname) | list | first
+         | default('', true) }}
 
 - name: Verify manager control traffic from the node
   ansible.builtin.command:
@@ -134,6 +146,7 @@
       - -c
       - "exec 3<>/dev/tcp/{{ hostvars[swarm_firewall_manager_probe].ansible_host }}/2377"
   changed_when: false
+  when: swarm_firewall_manager_probe | length > 0
 
 - name: Verify Swarm gossip traffic from the node
   ansible.builtin.command:
@@ -144,3 +157,17 @@
       - -c
       - "exec 3<>/dev/tcp/{{ hostvars[swarm_firewall_gossip_probe].ansible_host }}/7946"
   changed_when: false
+  when: swarm_firewall_gossip_probe | length > 0
+
+# A narrow --limit can leave no in-play peer to probe, so a check above skips.
+# Say so, rather than letting a green recap imply connectivity was verified.
+- name: Report unverified peer connectivity
+  ansible.builtin.debug:
+    msg: >-
+      Not verified from {{ inventory_hostname }}:
+      {{ 'manager control (2377)' if swarm_firewall_manager_probe | length == 0 else '' }}
+      {{ 'Swarm gossip (7946)' if swarm_firewall_gossip_probe | length == 0 else '' }}
+      -- no in-play peer to probe. Re-run with a wider --limit to check it.
+  when: >-
+    swarm_firewall_manager_probe | length == 0 or
+    swarm_firewall_gossip_probe | length == 0
