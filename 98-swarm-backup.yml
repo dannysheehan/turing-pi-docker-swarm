@@ -37,6 +37,17 @@
         state: directory
         mode: "0700"
 
+    # copy does not create missing parent directories. /root/.config exists on a
+    # node that has run this play before, so the omission stayed hidden until
+    # swarm_primary_manager moved to a manager that never had.
+    - name: Create the root configuration directory
+      ansible.builtin.file:
+        path: "{{ swarm_backup_pass_file | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Store the Swarm backup passphrase
       ansible.builtin.copy:
         content: "{{ backup_passphrase }}\n"
