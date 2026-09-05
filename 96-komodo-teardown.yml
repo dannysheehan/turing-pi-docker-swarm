@@ -55,8 +55,8 @@
       delay: 5
       until: komodo_teardown_drained.rc == 0
 
-- name: Remove Komodo database state from every manager
-  hosts: managers
+- name: Remove Komodo Core state from shared storage
+  hosts: primary_manager
   gather_facts: false
   any_errors_fatal: true
   tags: [komodo, teardown]
@@ -66,17 +66,36 @@
         that: komodo_teardown_confirm | default(false) | bool
         fail_msg: Re-run with -e komodo_teardown_confirm=true.
 
-    - name: Remove the Komodo Postgres data directory
-      ansible.builtin.file:
-        path: "{{ komodo_pg_data_dir }}"
-        state: absent
+    # The database is external and belongs to the DBA. Tearing down the Komodo
+    # stack must never touch it; dropping the Komodo data there is a deliberate,
+    # separate, manual act.
+    - name: Report what this teardown does not touch
+      ansible.builtin.debug:
+        msg: >-
+          Leaving the external database at {{ komodo_pg_host }} untouched.
+          Drop the '{{ komodo_database_db_name }}' database there manually if a
+          full rebuild is intended.
 
     # Core's Noise keypair lives here. Removing it forces a fresh identity, which
     # is correct for a rebuild: the Periphery agents are re-onboarded anyway and
-    # would otherwise refuse a Core whose public key no longer matches.
-    - name: Remove the Komodo Core configuration directory
+    # would otherwise refuse a Core whose public key no longer matches. It is on
+    # NFS and shared, so this runs from one manager rather than all three.
+    - name: Mount the Komodo Core configuration export
+      ansible.posix.mount:
+        path: /mnt/komodo-config-teardown
+        src: "{{ komodo_config_nfs_server }}:{{ komodo_config_nfs_path }}"
+        fstype: nfs
+        opts: "{{ komodo_config_nfs_opts }}"
+        state: ephemeral
+
+    - name: Remove the Komodo Core key material
       ansible.builtin.file:
-        path: "{{ komodo_config_dir }}"
+        path: /mnt/komodo-config-teardown/keys
+        state: absent
+
+    - name: Unmount the Komodo Core configuration export
+      ansible.posix.mount:
+        path: /mnt/komodo-config-teardown
         state: absent
 
 - name: Reset Periphery identity so agents re-enroll cleanly

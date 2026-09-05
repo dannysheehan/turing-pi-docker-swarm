@@ -302,6 +302,12 @@ those services are enabled.
 
 ## Maintenance and recovery
 
+When something is broken rather than being maintained, start at
+[RUNBOOK.md](RUNBOOK.md). It covers what recovers on its own (a single node
+loss, including a manager) and what does not (quorum loss, the NAS, the
+external database, a rejoining node, and Core identity), with triage commands
+that tell you which case you are in.
+
 General maintenance holds `docker-ce` and `docker-ce-cli`, drains each node,
 runs `/boot/dietpi/dietpi-update 1`, applies an APT dist-upgrade, reboots only
 when required, and checks DietPi postboot, Docker, Chrony synchronization, and

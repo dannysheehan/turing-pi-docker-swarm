@@ -2,68 +2,26 @@ version: "3.9"
 
 # Komodo control plane.
 #
-# The database tier is FerretDB v2 (MongoDB wire protocol) backed by Postgres +
-# the DocumentDB extension. MongoDB 5.0 and later require ARMv8.2-A with LSE
-# atomics, which the Cortex-A53 in a CM3+ does not implement, so stock MongoDB
-# is permanently capped at the end-of-life 4.4 series on this hardware.
-# FerretDB is the upstream-documented path for exactly this case.
+# The database lives on an external PostgreSQL host carrying the DocumentDB
+# extension; FerretDB translates the MongoDB wire protocol Komodo speaks onto
+# it. Stock MongoDB is not an option on this hardware at all: MongoDB 5.0 and
+# later require ARMv8.2-A with LSE atomics, and the Cortex-A53 in a CM3+
+# implements ARMv8-A only.
 #
-# Postgres, FerretDB and Komodo Core are all pinned to the primary manager
-# because the Postgres data directory and the Core key material are node-local
-# bind mounts.
+# Nothing here is pinned to a node. FerretDB is stateless, and Core's key
+# material sits on NFS, so Swarm may reschedule either service anywhere in the
+# cluster. That is deliberate: the previous layout pinned all three services to
+# the node holding the Postgres data directory, and when that node's storage
+# failed the tasks sat Pending against six healthy nodes they were not allowed
+# to use.
 
 services:
-  postgres:
-    image: {{ komodo_pg_image }}
-    init: true
-    labels:
-      # Keep Komodo's own StopAllContainers / PruneContainers away from the
-      # database backing Komodo itself.
-      komodo.skip: "true"
-    environment:
-      POSTGRES_USER: {{ komodo_db_user }}
-      POSTGRES_PASSWORD_FILE: /run/secrets/komodo_pg_password
-      POSTGRES_DB: postgres
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U {{ komodo_db_user }} -d postgres
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
-    secrets:
-      - source: {{ swarm_secrets_resolved_names[komodo_pg_password_secret_name] | default(komodo_pg_password_secret_name) }}
-        target: komodo_pg_password
-        mode: 0400
-    volumes:
-      - komodo_pg_data:/var/lib/postgresql/data
-    networks:
-      - komodo_back
-    deploy:
-      mode: replicated
-      replicas: 1
-      placement:
-        constraints:
-          - node.hostname == {{ komodo_db_node }}
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 5
-        window: 120s
-      update_config:
-        parallelism: 1
-        order: stop-first
-        failure_action: rollback
-        monitor: 30s
-      rollback_config:
-        parallelism: 1
-        order: stop-first
-
   ferretdb:
     image: {{ komodo_ferretdb_image }}
     init: true
     labels:
+      # Keep Komodo's own StopAllContainers / PruneContainers away from the
+      # database path backing Komodo itself.
       komodo.skip: "true"
     environment:
       # Full postgres:// URL, including credentials, supplied as a Swarm secret.
@@ -81,21 +39,15 @@ services:
     deploy:
       mode: replicated
       replicas: 1
-      placement:
-        constraints:
-          - node.hostname == {{ komodo_db_node }}
-      # No max_attempts: this service must keep retrying while Postgres
-      # completes first-time init and the DocumentDB extension installs,
-      # which takes minutes on this hardware. A bounded count makes Swarm
-      # abandon the task permanently.
+      # No max_attempts: a transient outage of the external database must not
+      # make Swarm abandon the task permanently.
       restart_policy:
         condition: on-failure
         delay: 10s
-      # failure_action: continue, not rollback. These services legitimately
-      # exit non-zero while Postgres finishes first-time init, and a 30s
-      # monitor window would treat that as a failed update and silently
-      # revert the spec -- including any fix being deployed. The unbounded
-      # restart_policy above is what converges them instead.
+      # failure_action: continue, not rollback. A 30s monitor window would
+      # treat a slow external database as a failed update and silently revert
+      # the spec, including any fix being deployed. The unbounded
+      # restart_policy above is what converges the service instead.
       update_config:
         parallelism: 1
         order: stop-first
@@ -130,6 +82,9 @@ services:
       - edge
       - komodo_back
     volumes:
+      # Core's identity (/config/keys/core.key) must follow the service
+      # wherever Swarm places it. A node-local bind mount would regenerate the
+      # keypair on every reschedule and break every enrolled Periphery agent.
       - komodo_config:/config
       # Komodo's own BackupCoreDatabase procedure dumps here. Without this
       # mount the scheduled backup has nowhere durable to write.
@@ -137,21 +92,9 @@ services:
     deploy:
       mode: replicated
       replicas: 1
-      placement:
-        constraints:
-          - node.hostname == {{ komodo_db_node }}
-      # No max_attempts: this service must keep retrying while Postgres
-      # completes first-time init and the DocumentDB extension installs,
-      # which takes minutes on this hardware. A bounded count makes Swarm
-      # abandon the task permanently.
       restart_policy:
         condition: on-failure
         delay: 10s
-      # failure_action: continue, not rollback. These services legitimately
-      # exit non-zero while Postgres finishes first-time init, and a 30s
-      # monitor window would treat that as a failed update and silently
-      # revert the spec -- including any fix being deployed. The unbounded
-      # restart_policy above is what converges them instead.
       update_config:
         parallelism: 1
         order: stop-first
@@ -167,20 +110,14 @@ networks:
     name: {{ traefik_backend_network }}
 
 volumes:
+  # Both volumes live on the NAS, not on any node's eMMC: they must survive
+  # total loss of the node the service happens to be running on.
   komodo_config:
     driver: local
     driver_opts:
-      type: none
-      o: bind
-      device: {{ komodo_config_dir }}
-  komodo_pg_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: {{ komodo_pg_data_dir }}
-  # Backups live on the NAS, not on the node's eMMC: they must survive total
-  # loss of the node that holds the database.
+      type: nfs
+      o: "addr={{ komodo_config_nfs_server }},{{ komodo_config_nfs_opts }}"
+      device: ":{{ komodo_config_nfs_path }}"
   komodo_backups:
     driver: local
     driver_opts:

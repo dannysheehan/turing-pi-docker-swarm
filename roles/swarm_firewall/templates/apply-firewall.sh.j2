@@ -15,6 +15,13 @@ ${IPT} -A ANSIBLE-INPUT -p tcp -s {{ admin_cidr }} --dport 22 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p tcp --dport 7946 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 7946 -j ACCEPT
 ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p udp --dport 4789 -j ACCEPT
+# An overlay network created with `--opt encrypted` -- komodo_back is one --
+# does not put VXLAN on udp/4789 between nodes. Docker wraps it in IPsec ESP
+# (IP protocol 50) instead, so without this rule the data plane is silently
+# dropped while DNS keeps resolving over the 7946 control plane. That failure
+# stayed hidden for as long as every service on the encrypted network was
+# pinned to a single node and no traffic ever crossed a node boundary.
+${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p esp -j ACCEPT
 {% endif %}
 {% endfor %}
 {% if inventory_hostname in groups['managers'] %}
@@ -30,12 +37,6 @@ ${IPT} -A ANSIBLE-INPUT -s {{ hostvars[peer].ansible_host }} -p 112 -j ACCEPT
 {% endfor %}
 {% endif %}
 ${IPT} -A ANSIBLE-INPUT -j DROP
-
-# Portainer has been removed. Tear down the chain it used, so nodes that were
-# firewalled for it before the removal do not keep a stale jump in DOCKER-USER.
-${IPT} -D DOCKER-USER -j ANSIBLE-PORTAINER 2>/dev/null || true
-${IPT} -F ANSIBLE-PORTAINER 2>/dev/null || true
-${IPT} -X ANSIBLE-PORTAINER 2>/dev/null || true
 
 ${IP6T} -N ANSIBLE-INPUT 2>/dev/null || ${IP6T} -F ANSIBLE-INPUT
 ${IP6T} -C INPUT -j ANSIBLE-INPUT 2>/dev/null || ${IP6T} -I INPUT 1 -j ANSIBLE-INPUT

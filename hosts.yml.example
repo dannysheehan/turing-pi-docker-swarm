@@ -22,9 +22,12 @@ workers:
     tpi-wrk-04:
       ansible_host: 192.0.2.57
 
+# Exactly one host, and it must match swarm_primary_manager in
+# group_vars/all/main.yml -- roles assert the two agree. Any manager will do;
+# change both together when the current one is retired or fails.
 primary_manager:
   hosts:
-    tpi-mgr-01:
+    tpi-mgr-02:
 
 cluster:
   children:

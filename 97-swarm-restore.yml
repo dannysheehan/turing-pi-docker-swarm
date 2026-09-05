@@ -29,6 +29,16 @@
         that:
           - swarm_restore_resolved_archive.stdout is match('^' ~ (swarm_restore_backup_dir | regex_escape) ~ '/swarm-.*\\.tar\\.gz\\.enc$')
 
+    # copy does not create missing parent directories, and this play runs during
+    # a recovery -- exactly when an avoidable failure costs the most.
+    - name: Create the root configuration directory
+      ansible.builtin.file:
+        path: "{{ swarm_restore_pass_file | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Store the restoration passphrase
       ansible.builtin.copy:
         content: "{{ backup_passphrase }}\n"

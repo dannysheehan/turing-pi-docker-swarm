@@ -19,3 +19,17 @@
   loop_control:
     loop_var: swarm_secrets_definition
     label: "{{ swarm_secrets_definition.name | default('invalid') }}"
+
+# Swarm secrets are immutable, so a changed 1Password value creates a new
+# content-hashed secret and leaves the previous one behind. Without this the
+# superseded versions accumulate forever, still carrying the credentials they
+# were created with. cleanup.yml existed for this but was never included by
+# anything, so it had never once run.
+#
+# Opt-in, because removal is not reversible: pass
+# -e swarm_secrets_cleanup_confirm=true. Only secrets carrying this role's
+# management label, that are not the currently resolved version, and that no
+# running service references, are removed.
+- name: Remove superseded Swarm secrets
+  ansible.builtin.include_tasks: cleanup.yml
+  when: swarm_secrets_cleanup_confirm | default(false) | bool
