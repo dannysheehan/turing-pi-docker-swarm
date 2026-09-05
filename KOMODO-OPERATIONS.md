@@ -488,10 +488,10 @@ rm -f "$HOME/.config/komodo/day2-key.json"
 
 ## Create the Resource Sync
 
-The starter declarations are in `komodo-infra/`. Ansible owns `servers.toml`
-and `swarm.toml`; exclude those two files from the Day-2 Resource Sync. Create
-the first Resource Sync through the Komodo API or UI and select only the Day-2
-paths:
+The starter declarations are in `komodo-infra/`. Server and Swarm resources are
+deliberately not declared there: Ansible creates them through the Komodo API
+from `hosts.yml`, which is their single source of truth. Create the first
+Resource Sync through the Komodo API or UI and select only the Day-2 paths:
 
 1. point it at the repository and intended branch;
 2. select `komodo-infra/deployments.toml`, `builds.toml`, `procedures.toml`,

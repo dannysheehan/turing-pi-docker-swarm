@@ -20,5 +20,6 @@ Notes:
   through the Komodo API from `hosts.yml`, so the inventory is their single
   source of truth. Earlier revisions carried `servers.toml` and `swarm.toml`;
   they were removed because nothing read them and editing them had no effect.
-- Keep control-plane bootstrap resources (Traefik, the Postgres/FerretDB
-  database tier, Komodo Core, Periphery) under Ansible ownership.
+- Keep control-plane bootstrap resources (Traefik, FerretDB, Komodo Core,
+  Periphery) under Ansible ownership. PostgreSQL is not in this cluster at all;
+  it runs on an external host that Ansible does not manage.
