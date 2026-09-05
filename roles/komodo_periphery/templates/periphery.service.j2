@@ -2,7 +2,18 @@
 Description=Komodo Periphery agent
 After=network-online.target docker.service
 Wants=network-online.target
-Requires=docker.service
+# PartOf, not Requires. Both propagate a stop of docker.service to this unit,
+# which is wanted -- the agent is useless without Docker. Neither propagates a
+# start, so with Requires the agent stayed down after any play that stopped and
+# restarted Docker (the Swarm backup does exactly that on the primary manager,
+# and the restore does it on every manager). Restart=on-failure does not cover
+# it either, because a propagated stop is clean rather than a failure.
+#
+# PartOf additionally propagates a *restart*, and the docker.service drop-in
+# this role installs adds Wants=periphery.service so that starting Docker
+# starts the agent again. That pairing is what makes the agent follow Docker's
+# lifecycle in both directions.
+PartOf=docker.service
 
 [Service]
 Type=simple

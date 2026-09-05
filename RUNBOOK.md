@@ -328,6 +328,41 @@ ssh <node> 'sudo cat /etc/komodo/keys/periphery.pub'   # compare to attempted_pu
 Approve in the UI, or via the API with `UpdateServerPublicKey`. Agents return to
 `Ok` within about 20 seconds.
 
+## Agents drop out after a backup or restore
+
+Both the Swarm backup and restore plays stop Docker — the backup on the primary
+manager, the restore on **every** manager. The Periphery agent follows Docker
+down, which is correct, and must come back up with it.
+
+The agent unit uses `PartOf=docker.service` paired with a `Wants=` drop-in in
+`docker.service.d`, so it follows Docker in both directions. If a node ever
+shows `NotOk` after one of these plays, check the pairing is present — an older
+node may still carry `Requires=`, which propagates the stop but never the start
+and leaves the agent down indefinitely:
+
+```sh
+ssh <node> 'systemctl is-active periphery'
+ssh <node> 'sudo systemctl cat periphery.service | grep -E "^(Requires|PartOf)="'
+ssh <node> 'ls /etc/systemd/system/docker.service.d/30-komodo-periphery.conf'
+```
+
+`Requires=` or a missing drop-in means the node predates the fix. Start the
+agent and reconverge:
+
+```sh
+ssh <node> 'sudo systemctl start periphery'
+uv run --frozen ansible-playbook 04-services.yml --tags periphery --ask-vault-pass
+```
+
+Note the symptom in Komodo is a websocket error, which reads like a network
+fault rather than a stopped service:
+
+```text
+WebSocket protocol error: Connection reset without closing handshake
+```
+
+Always check `systemctl is-active periphery` before investigating the network.
+
 ## NAS unreachable
 
 Core cannot start anywhere: `/config` (its keypair) and `/backups` are both NFS.

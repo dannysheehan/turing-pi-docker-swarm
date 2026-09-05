@@ -57,6 +57,28 @@
     mode: "0644"
   notify: Restart Komodo Periphery
 
+- name: Create the Docker service drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The other half of PartOf=docker.service in the unit above: PartOf propagates
+# Docker's stop to the agent but never its start, so without this the agent
+# stays down after any play that stops and restarts Docker.
+- name: Couple Periphery to the Docker lifecycle
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/30-komodo-periphery.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Wants=periphery.service
+  notify: Restart Komodo Periphery
+
 - name: Enable and start Komodo Periphery
   ansible.builtin.systemd_service:
     name: periphery.service
