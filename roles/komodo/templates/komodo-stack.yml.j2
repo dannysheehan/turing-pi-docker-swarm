@@ -26,6 +26,8 @@ services:
     environment:
       # Full postgres:// URL, including credentials, supplied as a Swarm secret.
       FERRETDB_POSTGRESQL_URL_FILE: /run/secrets/komodo_ferretdb_url
+      # INFO logs every command Komodo's agents send; keep forwarded syslog sane.
+      FERRETDB_LOG_LEVEL: {{ komodo_ferretdb_log_level }}
     secrets:
       # The FerretDB image is distroless and runs as ferretdb:ferretdb
       # (uid/gid 1000), so a root-owned 0400 secret is unreadable to it.

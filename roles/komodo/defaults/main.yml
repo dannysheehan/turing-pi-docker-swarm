@@ -26,6 +26,10 @@ komodo_ferretdb_image: ghcr.io/ferretdb/ferretdb:2.7.0@sha256:5706414241eb84f051
 # so a root-owned secret would be unreadable to it.
 komodo_ferretdb_uid: 1000
 komodo_ferretdb_gid: 1000
+# FerretDB logs every handled Mongo command at INFO; Komodo's agents poll it
+# constantly, which floods the forwarded syslog. WARN keeps failures visible
+# without the per-command chatter.
+komodo_ferretdb_log_level: warn
 
 # External PostgreSQL carrying the DocumentDB extension. The database is no
 # longer a Swarm service: it ran on one node's eMMC, which forced every Komodo
