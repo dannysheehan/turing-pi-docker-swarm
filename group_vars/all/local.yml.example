@@ -34,3 +34,18 @@ komodo_jwt_secret_reference: op://Turing-Pi/Komodo/jwt-secret
 # references must be configured together and belong to an administrator key.
 komodo_onboarding_api_key_secret_reference: ""
 komodo_onboarding_api_secret_secret_reference: ""
+
+# TLS certificate. Traefik does not run ACME: the controller issues one
+# certificate with lego over a Cloudflare DNS-01 challenge and ships it to the
+# Swarm as secrets. DNS-01 needs no inbound reachability, which is what makes
+# it work for internal-only hostnames.
+#
+# The Cloudflare token must be scoped Zone:DNS:Edit + Zone:Zone:Read on the zone.
+traefik_cert_enabled: true
+traefik_cert_domains:
+  - "*.home.example.com"
+  - home.example.com
+traefik_cloudflare_token_secret_reference: op://Turing-Pi/Cloudflare/dns-token
+# Start against the staging CA. Production allows only 5 duplicate certificates
+# per week for an identical name set, which is easy to exhaust while iterating.
+traefik_cert_staging: true

@@ -1,0 +1,164 @@
+---
+# Obtain the TLS certificate on the controller and publish it to the Swarm.
+#
+# lego runs on the controller, not on a node, so the Cloudflare API token never
+# leaves the machine that already holds the 1Password session. Only the issued
+# certificate reaches the cluster, as a Swarm secret.
+#
+# Configuration is passed as LEGO_* environment variables rather than flags:
+# lego defines nearly every flag on the `run` subcommand rather than globally,
+# so flag ordering is easy to get wrong, and the environment form is immune to
+# it. Verified against lego 5.5.1.
+
+- name: Validate TLS certificate inputs
+  ansible.builtin.assert:
+    that:
+      - traefik_cert_domains | length > 0
+      - traefik_cert_email | length > 3
+      - traefik_cloudflare_token_secret_reference is match('^op://[^/]+/[^/]+/.+$')
+      - not (traefik_cert_lego_image is search(':latest$'))
+    fail_msg: >-
+      TLS issuance requires traefik_cert_domains, an ACME email, a pinned lego
+      image, and an op:// reference to a Cloudflare API token scoped to
+      Zone:DNS:Edit and Zone:Zone:Read on the zone.
+
+- name: Obtain or renew the certificate on the controller
+  delegate_to: localhost
+  run_once: true
+  become: false
+  vars:
+    ansible_become: false
+  block:
+    # Under the controller user's own home, so nothing here needs root and the
+    # certificate stays readable by the lookup that ships it to the Swarm.
+    - name: Create the controller-side ACME state directory
+      ansible.builtin.file:
+        path: "{{ traefik_cert_state_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Read the Cloudflare API token
+      ansible.builtin.set_fact:
+        traefik_cloudflare_token: >-
+          {{ lookup('community.general.onepassword', traefik_cloudflare_token_secret_reference)
+             | b64encode | b64decode }}
+      no_log: true
+
+    # An --env-file rather than -e: a token passed as an argument is visible in
+    # the process list of every other user on the controller for the lifetime
+    # of the challenge, which can be minutes while DNS propagates.
+    - name: Stage the Cloudflare credential for lego
+      ansible.builtin.copy:
+        content: "CF_DNS_API_TOKEN={{ traefik_cloudflare_token }}\n"
+        dest: "{{ traefik_cert_state_dir }}/cloudflare.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Record the certificate state before issuance
+      ansible.builtin.find:
+        paths: "{{ traefik_cert_state_dir }}/certificates"
+        patterns: "*.crt"
+        excludes: "*.issuer.crt"
+        get_checksum: true
+      register: traefik_cert_before
+
+    # --user so lego writes as the controller user; the container would
+    # otherwise create root-owned files inside a 0700 user directory.
+    - name: Run lego over a Cloudflare DNS-01 challenge
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - run
+          - --rm
+          - --user
+          - "{{ traefik_cert_run_uid }}:{{ traefik_cert_run_gid }}"
+          - --env-file
+          - "{{ traefik_cert_state_dir }}/cloudflare.env"
+          - -e
+          - LEGO_PATH=/lego
+          - -e
+          - LEGO_ACCEPT_TOS=true
+          - -e
+          - "LEGO_EMAIL={{ traefik_cert_email }}"
+          - -e
+          - "LEGO_DOMAINS={{ traefik_cert_domains | join(',') }}"
+          - -e
+          - "LEGO_KEY_TYPE={{ traefik_cert_key_type }}"
+          - -e
+          - LEGO_DNS=cloudflare
+          - -e
+          - "LEGO_SERVER={{ 'letsencrypt-staging' if traefik_cert_staging | bool else 'letsencrypt' }}"
+          - -e
+          - "LEGO_RENEW_DAYS={{ traefik_cert_renew_days }}"
+          - -e
+          - LEGO_REUSE_KEY=true
+          - -v
+          - "{{ traefik_cert_state_dir }}:/lego"
+          - "{{ traefik_cert_lego_image }}"
+          - run
+      register: traefik_cert_lego
+      changed_when: false
+      failed_when: traefik_cert_lego.rc != 0
+
+    - name: Record the certificate state after issuance
+      ansible.builtin.find:
+        paths: "{{ traefik_cert_state_dir }}/certificates"
+        patterns: "*.crt"
+        excludes: "*.issuer.crt"
+        get_checksum: true
+      register: traefik_cert_after
+
+    - name: Report whether the certificate changed
+      ansible.builtin.set_fact:
+        traefik_cert_changed: >-
+          {{ (traefik_cert_before.files | map(attribute='checksum') | sort | list)
+             != (traefik_cert_after.files | map(attribute='checksum') | sort | list) }}
+
+  always:
+    # The token must not outlive the run, whether or not issuance succeeded.
+    - name: Remove the staged Cloudflare credential
+      ansible.builtin.file:
+        path: "{{ traefik_cert_state_dir }}/cloudflare.env"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: false
+      vars:
+        ansible_become: false
+
+- name: Require an issued certificate
+  ansible.builtin.assert:
+    that:
+      - traefik_cert_after.files | length > 0
+    fail_msg: >-
+      lego produced no certificate in {{ traefik_cert_state_dir }}/certificates.
+      Check that the Cloudflare token carries Zone:DNS:Edit and Zone:Zone:Read
+      for this zone, and that the controller can reach the ACME and Cloudflare
+      APIs on 443.
+
+# lego writes a wildcard as `_.example.com.crt`, so the name is resolved by
+# globbing rather than by reconstructing it from the domain list.
+- name: Resolve the issued certificate paths
+  ansible.builtin.set_fact:
+    traefik_cert_cert_path: "{{ traefik_cert_after.files | map(attribute='path') | sort | first }}"
+    traefik_cert_key_path: >-
+      {{ traefik_cert_after.files | map(attribute='path') | sort | first
+         | regex_replace('\.crt$', '.key') }}
+
+- name: Synchronize the certificate into Swarm secrets
+  ansible.builtin.include_role:
+    name: swarm_secrets
+  vars:
+    swarm_secrets_definitions:
+      # `source` records provenance only; the value comes from lego, not from
+      # 1Password. ascii_only is deliberately unset: PEM is multi-line, and
+      # that check rejects newlines.
+      - name: "{{ traefik_cert_secret_name }}"
+        source: "{{ traefik_cloudflare_token_secret_reference }}"
+        value: "{{ lookup('file', traefik_cert_cert_path) }}\n"
+        minimum_length: 20
+      - name: "{{ traefik_cert_key_secret_name }}"
+        source: "{{ traefik_cloudflare_token_secret_reference }}"
+        value: "{{ lookup('file', traefik_cert_key_path) }}\n"
+        minimum_length: 20
+  when: inventory_hostname == swarm_primary_manager

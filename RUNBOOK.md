@@ -377,6 +377,45 @@ gives Core a fresh identity and locks out every agent, converting an outage into
 a re-enrollment. FerretDB is unaffected — it is stateless and talks only to the
 external database.
 
+## TLS certificate expired or untrusted
+
+The daily timer on the controller warns before this happens. If it fires, or a
+client reports an untrusted certificate:
+
+```sh
+# What is actually on the wire, which is the only thing that matters.
+echo | openssl s_client -connect <vip>:443 -servername <komodo-domain> 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+`CN = TRAEFIK DEFAULT CERT` means Traefik fell back to its self-signed
+certificate: the Swarm secret is missing or unreadable, not that the
+certificate expired. Check the service carries both secrets:
+
+```sh
+ssh <manager> 'docker service inspect traefik_traefik \
+  --format "{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.File.Name}} {{end}}"'
+```
+
+A real expiry, or a missing secret, is fixed the same way -- re-run issuance:
+
+```sh
+uv run --frozen ansible-playbook 06-tls.yml --ask-vault-pass
+```
+
+Two failure modes worth separating, because they look identical from a browser:
+
+- **`lego` renewed but the Swarm did not update.** The certificate on the
+  controller is fresh while the wire is stale. The timer catches this precisely
+  because it checks the wire rather than the file.
+- **`lego` could not renew.** Usually the Cloudflare token expired or lost its
+  scope, or the controller could not reach the ACME or Cloudflare API. The
+  playbook fails loudly with the lego error.
+
+While iterating, set `traefik_cert_staging: true`. Production allows only five
+duplicate certificates per week for an identical set of names, and a debugging
+loop exhausts that quickly -- after which you wait, with no way to shorten it.
+
 ## Verifying a recovery
 
 Do not stop at "the site loads". Check all four:

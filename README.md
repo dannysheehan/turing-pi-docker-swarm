@@ -355,6 +355,39 @@ does not erase or automatically demote manager state. If former managers do
 not reconnect cleanly, stop and follow Docker's manager recovery procedure
 rather than deleting state ad hoc.
 
+## TLS certificates
+
+Traefik runs no ACME client. All three replicas publish `:443` in host mode on
+every manager, so each must present the same certificate, and Traefik OSS has
+no distributed ACME storage: three replicas sharing one resolver would race and
+exhaust Let's Encrypt duplicate-certificate limits.
+
+Instead the controller issues one wildcard certificate with `lego` over a
+Cloudflare **DNS-01** challenge and publishes it to the Swarm as content-hashed
+secrets, which every replica serves through the file provider. DNS-01 needs no
+inbound reachability, which is what makes it work at all here: these hostnames
+resolve to RFC1918 addresses and are not publicly routable, so HTTP-01 can
+never validate them.
+
+The Cloudflare API token must be scoped `Zone:DNS:Edit` and `Zone:Zone:Read`
+for the zone, and is referenced by `op://` like every other secret. It is read
+on the controller and never reaches a node.
+
+```sh
+uv run --frozen ansible-playbook 06-tls.yml --ask-vault-pass
+```
+
+`lego` renews only inside its renewal window, so re-running this is cheap and
+idempotent. Set `traefik_cert_staging: true` while iterating: production allows
+only five duplicate certificates per week for an identical name set.
+
+Renewal is deliberately manual. The same playbook installs a daily systemd
+timer on the controller that checks the certificate Traefik actually serves --
+not the file `lego` wrote, since a renewal that never reached the Swarm looks
+healthy on disk and broken to every client -- and warns to the syslog receiver
+well before expiry. Nothing renews unattended, so no vault password or
+1Password service-account token has to be stored on disk.
+
 ## Network and availability limits
 
 The firewall owns only `ANSIBLE-INPUT` and leaves

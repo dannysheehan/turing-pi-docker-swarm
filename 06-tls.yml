@@ -1,0 +1,29 @@
+---
+# Issue or renew the Traefik TLS certificate, then install the expiry monitor.
+#
+# Renewal is deliberately a deliberate act: lego renews only inside its renewal
+# window, so re-running this is cheap and idempotent, and nothing here needs a
+# stored vault password or a 1Password service-account token. The timer only
+# watches and warns; it never renews on its own.
+- name: Issue or renew the Traefik TLS certificate
+  hosts: managers
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [tls, traefik]
+  roles:
+    - role: traefik
+
+- name: Install the TLS expiry monitor on the controller
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  vars:
+    ansible_become: false
+    tls_expiry_monitor_enabled: "{{ traefik_cert_enabled | default(false) }}"
+    tls_expiry_monitor_names:
+      - "{{ komodo_domain }}"
+      - "{{ traefik_domain }}"
+  tags: [tls, monitor]
+  roles:
+    - role: tls_expiry_monitor

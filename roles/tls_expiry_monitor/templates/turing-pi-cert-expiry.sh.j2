@@ -1,0 +1,76 @@
+#!/bin/sh
+# Managed by Ansible. Warn before the served TLS certificate expires.
+#
+# Checks what Traefik presents on the wire, not what lego wrote to disk: a
+# renewal that never reached the Swarm looks healthy on the controller and
+# broken to every client, and only the wire tells the truth.
+set -eu
+
+ENDPOINT="{{ tls_expiry_monitor_endpoint }}"
+WARN_DAYS={{ tls_expiry_monitor_warn_days }}
+SYSLOG_SERVER="{{ tls_expiry_monitor_syslog_server }}"
+SYSLOG_PORT={{ tls_expiry_monitor_syslog_port }}
+TAG=turing-pi-cert
+
+status=0
+
+notify() {
+    level="$1"
+    message="$2"
+    echo "${level}: ${message}"
+    if [ -n "$SYSLOG_SERVER" ]; then
+        # Best effort: a missing receiver must not fail the check itself.
+        logger --udp --server "$SYSLOG_SERVER" --port "$SYSLOG_PORT" \
+               --rfc5424 --tag "$TAG" --priority "daemon.${level}" \
+               "$message" 2>/dev/null || true
+    fi
+}
+
+check() {
+    name="$1"
+
+    end_date=$(echo \
+        | openssl s_client -connect "${ENDPOINT}:443" -servername "$name" 2>/dev/null \
+        | openssl x509 -noout -enddate 2>/dev/null \
+        | cut -d= -f2)
+
+    if [ -z "$end_date" ]; then
+        notify err "${name}: could not read a certificate from ${ENDPOINT}:443"
+        status=1
+        return
+    fi
+
+    end_epoch=$(date -d "$end_date" +%s 2>/dev/null || echo 0)
+    if [ "$end_epoch" -eq 0 ]; then
+        notify err "${name}: unparsable expiry date '${end_date}'"
+        status=1
+        return
+    fi
+
+    days_left=$(( (end_epoch - $(date +%s)) / 86400 ))
+
+    subject=$(echo \
+        | openssl s_client -connect "${ENDPOINT}:443" -servername "$name" 2>/dev/null \
+        | openssl x509 -noout -subject 2>/dev/null)
+
+    case "$subject" in
+        *"TRAEFIK DEFAULT CERT"*)
+            notify err "${name}: serving the Traefik self-signed fallback, not the issued certificate"
+            status=1
+            return
+            ;;
+    esac
+
+    if [ "$days_left" -lt "$WARN_DAYS" ]; then
+        notify warning "${name}: certificate expires in ${days_left} days (${end_date}); renew with 06-tls.yml"
+        status=1
+    else
+        echo "info: ${name}: ${days_left} days remaining"
+    fi
+}
+
+{% for name in tls_expiry_monitor_names %}
+check "{{ name }}"
+{% endfor %}
+
+exit "$status"

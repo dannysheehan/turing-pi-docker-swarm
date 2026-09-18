@@ -1,5 +1,14 @@
 version: "3.9"
 
+# Traefik edge proxy.
+#
+# When traefik_cert_enabled, Traefik runs no ACME client at all. All three
+# replicas publish :443 in host mode on every manager, so each must present the
+# same certificate, and Traefik OSS has no distributed ACME storage -- three
+# resolvers racing for one name would burn Let's Encrypt duplicate limits and
+# leave replicas serving different certificates. The controller issues one
+# certificate instead and delivers it here as Swarm secrets.
+
 services:
   traefik:
     image: traefik:{{ traefik_version }}
@@ -8,10 +17,15 @@ services:
       - --providers.file.watch=true
       - --entryPoints.web.address=:80
       - --entryPoints.websecure.address=:443
+{% if not traefik_cert_enabled | bool %}
+      # HTTP-01 cannot validate these hostnames: they resolve to RFC1918
+      # addresses and are not reachable from the public internet. This path
+      # never issues, and exists only until traefik_cert_enabled is turned on.
       - --certificatesResolvers.le.acme.email={{ traefik_acme_email }}
       - --certificatesResolvers.le.acme.storage=/var/lib/traefik/acme.json
       - --certificatesResolvers.le.acme.httpChallenge=true
       - --certificatesResolvers.le.acme.httpChallenge.entryPoint=web
+{% endif %}
       - --ping=true
     ports:
       - target: 80
@@ -22,8 +36,20 @@ services:
         published: 443
         protocol: tcp
         mode: host
+{% if traefik_cert_enabled | bool %}
+    secrets:
+      # Traefik runs as root in-container, so root-owned 0400 is readable.
+      - source: {{ swarm_secrets_resolved_names[traefik_cert_secret_name] | default(traefik_cert_secret_name) }}
+        target: traefik_tls_cert
+        mode: 0400
+      - source: {{ swarm_secrets_resolved_names[traefik_cert_key_secret_name] | default(traefik_cert_key_secret_name) }}
+        target: traefik_tls_key
+        mode: 0400
+{% endif %}
     volumes:
+{% if not traefik_cert_enabled | bool %}
       - {{ traefik_acme_storage_dir }}/acme.json:/var/lib/traefik/acme.json
+{% endif %}
       - {{ traefik_stack_dir }}/dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       - edge
@@ -52,3 +78,11 @@ networks:
   komodo_back:
     external: true
     name: {{ traefik_backend_network }}
+{% if traefik_cert_enabled | bool %}
+
+secrets:
+  {{ swarm_secrets_resolved_names[traefik_cert_secret_name] | default(traefik_cert_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret
+  {{ swarm_secrets_resolved_names[traefik_cert_key_secret_name] | default(traefik_cert_key_secret_name) }}:  # pragma: allowlist secret
+    external: true  # pragma: allowlist secret
+{% endif %}

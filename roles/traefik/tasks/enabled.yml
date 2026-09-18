@@ -105,6 +105,13 @@
   when: traefik_backend_network_state.rc != 0
   changed_when: true
 
+# Must precede the stack render: the template references the resolved secret
+# names, and the deploy would fail against secrets that do not exist yet.
+- name: Obtain and publish the TLS certificate
+  ansible.builtin.include_tasks: certificate.yml
+  when: traefik_cert_enabled | bool
+  tags: [tls]
+
 - name: Render Traefik stack
   ansible.builtin.template:
     src: traefik-stack.yml.j2
