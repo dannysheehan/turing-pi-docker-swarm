@@ -75,7 +75,7 @@
           - --env-file
           - "{{ traefik_cert_state_dir }}/cloudflare.env"
           - -e
-          - LEGO_PATH=/lego
+          - LEGO_PATH=/data
           - -e
           - LEGO_ACCEPT_TOS=true
           - -e
@@ -87,13 +87,18 @@
           - -e
           - LEGO_DNS=cloudflare
           - -e
+          - "LEGO_DNS_PROPAGATION_WAIT={{ traefik_cert_propagation_wait }}"
+          - -e
           - "LEGO_SERVER={{ 'letsencrypt-staging' if traefik_cert_staging | bool else 'letsencrypt' }}"
           - -e
           - "LEGO_RENEW_DAYS={{ traefik_cert_renew_days }}"
           - -e
           - LEGO_REUSE_KEY=true
           - -v
-          - "{{ traefik_cert_state_dir }}:/lego"
+          # /data, not /lego: /lego is the lego binary itself (the image
+          # entrypoint), so bind-mounting a directory over it fails with
+          # "not a directory".
+          - "{{ traefik_cert_state_dir }}:/data"
           - "{{ traefik_cert_lego_image }}"
           - run
       register: traefik_cert_lego

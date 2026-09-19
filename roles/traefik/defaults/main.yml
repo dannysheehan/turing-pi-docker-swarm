@@ -38,6 +38,13 @@ traefik_cert_state_dir: "{{ lookup('env', 'HOME') }}/.local/share/turing-pi-lego
 traefik_cert_run_uid: "{{ lookup('pipe', 'id -u') }}"
 traefik_cert_run_gid: "{{ lookup('pipe', 'id -g') }}"
 traefik_cert_key_type: EC256
+# Cloudflare takes roughly 45 seconds to publish a new TXT record to its own
+# nameservers -- measured, not assumed. lego's propagation check gives up in
+# about 10 seconds on an NXDOMAIN, so issuance fails long before the record is
+# live, and no choice of resolver helps because the record genuinely is not
+# there yet. Waiting a fixed period instead of polling is deterministic; 90s is
+# double the observed delay.
+traefik_cert_propagation_wait: 90s
 # lego renews only when fewer than this many days remain, so re-running the
 # play is cheap and idempotent rather than re-issuing every time.
 traefik_cert_renew_days: 30
