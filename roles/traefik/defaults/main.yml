@@ -10,3 +10,49 @@ traefik_edge_network: edge
 traefik_backend_network: komodo_back
 traefik_komodo_backend_url: http://komodo-core:9120
 traefik_acme_storage_dir: /mnt/dietpi_userdata/traefik
+
+# --- TLS certificate -------------------------------------------------------
+#
+# Traefik does NOT run ACME here. Three replicas publish :443 in host mode on
+# every manager, so each must present the same certificate, and Traefik OSS has
+# no distributed ACME storage -- three replicas sharing one resolver would race
+# and burn Let's Encrypt duplicate-certificate limits.
+#
+# Instead the controller obtains one certificate with lego over a Cloudflare
+# DNS-01 challenge and ships it to the Swarm as content-hashed secrets, which
+# every replica then serves through the file provider. DNS-01 also removes the
+# need for any inbound reachability, which matters because these hostnames
+# resolve to RFC1918 addresses and are not publicly routable.
+traefik_cert_enabled: false
+# Names on the certificate. A wildcard covers every internal host with one
+# renewal, and keeps individual hostnames out of Certificate Transparency logs.
+traefik_cert_domains: []
+traefik_cert_email: "{{ traefik_acme_email }}"
+# Pinned: lego is handling account keys and private material.
+traefik_cert_lego_image: goacme/lego:v5.5.1@sha256:9c446e8ce05155f87475ce87392a5c55472a7ecd06e244752f762d2f4b162e8d
+# Controller-side state: the ACME account key and issued certificates live here
+# and MUST persist between runs, or every run registers a new ACME account.
+traefik_cert_state_dir: "{{ lookup('env', 'HOME') }}/.local/share/turing-pi-lego"
+# lego runs in a container; without these it writes root-owned files into a
+# 0700 user directory and the lookup that ships the certificate cannot read it.
+traefik_cert_run_uid: "{{ lookup('pipe', 'id -u') }}"
+traefik_cert_run_gid: "{{ lookup('pipe', 'id -g') }}"
+traefik_cert_key_type: EC256
+# Cloudflare takes roughly 45 seconds to publish a new TXT record to its own
+# nameservers -- measured, not assumed. lego's propagation check gives up in
+# about 10 seconds on an NXDOMAIN, so issuance fails long before the record is
+# live, and no choice of resolver helps because the record genuinely is not
+# there yet. Waiting a fixed period instead of polling is deterministic; 90s is
+# double the observed delay.
+traefik_cert_propagation_wait: 90s
+# lego renews only when fewer than this many days remain, so re-running the
+# play is cheap and idempotent rather than re-issuing every time.
+traefik_cert_renew_days: 30
+# Exercise the full path against the staging CA first: the production duplicate
+# certificate limit is 5 per week for an identical name set, and is easy to
+# exhaust while iterating.
+traefik_cert_staging: false
+traefik_cert_secret_name: traefik_tls_cert  # pragma: allowlist secret
+traefik_cert_key_secret_name: traefik_tls_key  # pragma: allowlist secret
+# Cloudflare API token, scoped Zone:DNS:Edit + Zone:Zone:Read on the zone.
+traefik_cloudflare_token_secret_reference: ""

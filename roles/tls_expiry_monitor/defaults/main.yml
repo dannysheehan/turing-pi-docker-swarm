@@ -1,0 +1,16 @@
+---
+# Watches the certificate Traefik actually serves, rather than the file lego
+# wrote. Those differ whenever a renewal succeeds but the Swarm redeploy does
+# not, which is exactly the failure this is meant to catch.
+tls_expiry_monitor_enabled: false
+tls_expiry_monitor_endpoint: "{{ swarm_vip }}"
+tls_expiry_monitor_names: []
+# Let's Encrypt certificates last 90 days and lego renews at 30 days left, so
+# 21 days means something has been wrong for over a week before this fires.
+tls_expiry_monitor_warn_days: 21
+tls_expiry_monitor_script: /usr/local/bin/turing-pi-cert-expiry
+tls_expiry_monitor_calendar: daily
+# Forwarded to the same receiver the nodes log to, so certificate warnings land
+# beside everything else rather than only in the controller's journal.
+tls_expiry_monitor_syslog_server: "{{ log_shipping_server | default('') }}"
+tls_expiry_monitor_syslog_port: 514

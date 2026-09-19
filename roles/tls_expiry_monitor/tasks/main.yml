@@ -1,0 +1,78 @@
+---
+- name: Reconcile the TLS expiry monitor when enabled
+  when: tls_expiry_monitor_enabled | bool
+  block:
+    - name: Validate TLS expiry monitor inputs
+      ansible.builtin.assert:
+        that:
+          - tls_expiry_monitor_names | length > 0
+          - tls_expiry_monitor_warn_days | int > 0
+          - tls_expiry_monitor_endpoint | length > 0
+        fail_msg: >-
+          The TLS expiry monitor needs at least one hostname to check, a
+          positive warning threshold, and an endpoint to connect to.
+
+    - name: Install the certificate expiry check
+      ansible.builtin.template:
+        src: turing-pi-cert-expiry.sh.j2
+        dest: "{{ tls_expiry_monitor_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+      vars:
+        ansible_become: true
+
+    - name: Install the certificate expiry service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/turing-pi-cert-expiry.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Check the TLS certificate Traefik serves
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart={{ tls_expiry_monitor_script }}
+      become: true
+      vars:
+        ansible_become: true
+      register: tls_expiry_monitor_unit
+
+    - name: Install the certificate expiry timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/turing-pi-cert-expiry.timer
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Daily TLS certificate expiry check
+
+          [Timer]
+          OnCalendar={{ tls_expiry_monitor_calendar }}
+          # The controller is not always on; catch up rather than skip.
+          Persistent=true
+          RandomizedDelaySec=1h
+
+          [Install]
+          WantedBy=timers.target
+      become: true
+      vars:
+        ansible_become: true
+      register: tls_expiry_monitor_timer
+
+    - name: Enable the certificate expiry timer
+      ansible.builtin.systemd_service:
+        name: turing-pi-cert-expiry.timer
+        enabled: true
+        state: started
+        daemon_reload: >-
+          {{ tls_expiry_monitor_unit.changed or tls_expiry_monitor_timer.changed }}
+      become: true
+      vars:
+        ansible_become: true
