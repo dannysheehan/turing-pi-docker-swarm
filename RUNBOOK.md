@@ -45,6 +45,7 @@ Read them together:
 | one node `Down`, others `Ready` | `Running` | [1 — single node lost](#scenario-1-a-single-node-is-lost) (no action) |
 | two managers `Down` or command hangs | any | [2 — quorum lost](#scenario-2-quorum-is-lost) |
 | all `Ready` | `Pending` | [3 — cannot schedule](#scenario-3-komodo-cannot-schedule) |
+| all `Ready` | prolonged `Preparing` | [Image preparation stalled](#image-preparation-stalled) |
 | all `Ready` | restarting / `Failed` | [4 — Komodo crash loop](#scenario-4-komodo-is-crash-looping) |
 | a node returns after a failure | any | [5 — node rejoining](#scenario-5-a-failed-node-rejoins) |
 
@@ -376,6 +377,83 @@ Restore the NAS. Do **not** work around it by recreating `/config` locally: that
 gives Core a fresh identity and locks out every agent, converting an outage into
 a re-enrollment. FerretDB is unaffected — it is stateless and talks only to the
 external database.
+
+## Image preparation stalled
+
+On 2026-09-25, a power outage exposed two independent failures. Core initially
+could not mount its NAS-backed `/config` (`no route to host`, observed at
+02:18 Brisbane time). FerretDB then remained on `tpi-wrk-04` without a container:
+Docker repeatedly logged image-pull DNS errors against the router between
+04:14 and 06:50. That node had only the router in `/etc/resolv.conf`. Core kept
+restarting because FerretDB was unavailable even after the NAS returned. A
+forced FerretDB update replaced the task and recovery followed around 06:50.
+The logs establish a DNS failure, but not why the router's resolver failed.
+
+An unlimited application restart policy does not impose a deadline on image
+preparation. Container health checks also cannot help before a container exists.
+First identify the service and node with the stalled task:
+
+```sh
+ssh <manager> 'docker service ps komodo_ferretdb --no-trunc'
+ssh <affected-node> 'cat /etc/resolv.conf; timeout 15 getent ahosts ghcr.io'
+ssh <affected-node> 'sudo journalctl -u docker --since "30 minutes ago" --no-pager'
+```
+
+Look for `pulling image failed` and `lookup ghcr.io ... server misbehaving` or
+timeouts. `Preparing` can also mean storage or network setup; check the actual
+daemon error before treating it as DNS.
+
+Repair DNS and prepare both image caches on all nodes:
+
+```sh
+uv run --frozen ansible-playbook 04-services.yml --tags images
+```
+
+Add `--ask-vault-pass` if the inventory contains an encrypted Vault file;
+Ansible still loads it even though preparation uses no Vault values.
+
+This requires registry connectivity only for missing images, although DNS
+resolution is always checked. It changes no service definitions and does not
+restart Docker. If the task still fails to progress after its dependency is
+healthy, replace **only the affected service's task**, once:
+
+```sh
+ssh <manager> 'docker service update --force komodo_ferretdb'
+```
+
+Check `docker service ps` and daemon logs again before repeating an action.
+A forced update may pick the same node. Do not force Core repeatedly while
+FerretDB or the NAS is unavailable, and never replace its NFS identity with
+an empty local directory to bypass an outage.
+
+The `images` preparation runs during normal Komodo/database convergence too.
+It validates distinct resolver IPs and caches the configured immutable images
+on every eligible node. All resolvers still share the gateway/WAN, and image
+pruning can remove unused caches. Neither this preparation nor the existing
+restart policies guarantee a deadline for recovery.
+
+Monitor HTTPS availability, desired/running service counts, and tasks stuck in
+`Preparing` from outside Komodo. A practical initial alert threshold is five
+minutes, adjusted to measured startup times. No automatic force-update watchdog
+is installed: a dependency outage must not produce a competing restart loop.
+
+## Proving power-outage recovery
+
+Run this in a maintenance window with current backups and console access.
+Configuration validation and check mode do not prove boot recovery.
+
+1. Run `04-services.yml --tags images` twice. The second run should report no
+   changes. Verify each node has both configured image digests.
+2. Reboot one worker and verify its DNS configuration and image caches persist.
+3. Exercise temporary registry/DNS unavailability with the images already
+   cached. Verify replacement tasks can start; include `tpi-wrk-04`.
+4. Test a cluster restart with NAS and external PostgreSQL restoration delayed,
+   then restore each dependency. Require Core and FerretDB to recover without
+   a forced update within an agreed interval (start with ten minutes after all
+   dependencies are healthy).
+5. Follow [Verifying a recovery](#verifying-a-recovery), including Periphery
+   connections and a database backup. Record elapsed times and any task that
+   stays in `Preparing` for later investigation.
 
 ## TLS certificate expired or untrusted
 

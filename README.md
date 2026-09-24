@@ -244,10 +244,35 @@ are not an alternative rollout sequence.
 | `99-reboot-kernel.yml` | Emergency reboot of exactly one limited node |
 
 `04-services.yml` exposes `nfs`, `keepalived`, `traefik`, `database`,
-`periphery`, `onboarding`, and `komodo` tags for a scoped operator
+`periphery`, `onboarding`, `images`, and `komodo` tags for a scoped operator
 convergence. Use `--tags database` to reconcile only the Postgres/FerretDB
 tier and Komodo Core, or `--tags komodo` for the whole control plane including
 Periphery enrollment and the Swarm resource.
+
+The `database` and `komodo` paths first reconcile node DNS and cache the pinned
+Core and FerretDB image digests on **every cluster node**, before deploying the
+services. Missing images are downloaded with a ten-minute limit per image;
+already cached images require no registry request. This reduces dependence on
+the WAN and registry when Swarm reschedules after a power outage. Image pruning
+can remove these caches; run preparation again after pruning or changing pins.
+Preparation can also run independently, without service restarts, NAS access,
+or application credentials:
+
+```sh
+uv run --frozen ansible-playbook 04-services.yml --tags images --check --diff
+uv run --frozen ansible-playbook 04-services.yml --tags images
+```
+
+If an encrypted `group_vars/all/vault.yml` is present, add `--ask-vault-pass`:
+Ansible loads inventory variables even though these tasks use no Vault values.
+
+Use `01-provision.yml --tags dns` to reconcile only DNS. The resolver list
+contains two independent public providers followed by the router. The role
+requires two or three distinct IP addresses and a regular `/etc/resolv.conf`,
+then checks host resolution of `ghcr.io`. It owns the whole file, including
+removal of unmanaged search/options entries. DietPi network configuration can
+rewrite it; rerun DNS reconciliation after using `dietpi-config`. This is
+convergence-time preparation, not a boot-time dependency or a recovery daemon.
 
 `site.yml` does not perform OS upgrades, firewall
 activation, first Swarm initialization, Swarm backup/restore, or emergency

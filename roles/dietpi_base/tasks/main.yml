@@ -82,29 +82,9 @@
     group: root
     mode: "0644"
 
-- name: Require at least two DNS resolvers
-  ansible.builtin.assert:
-    that:
-      - dietpi_base_nameservers | length >= 2
-    fail_msg: >-
-      dietpi_base_nameservers must list at least two resolvers so one failing
-      upstream cannot stop image pulls.
-
-# DietPi writes /etc/resolv.conf once at first boot and nothing regenerates it,
-# so a hand-edited node keeps its resolvers forever. On 2026-09-25 tpi-wrk-04
-# had only the router, which returned SERVFAIL after a power loss; its FerretDB
-# pull stalled in Preparing for hours while every other node fell back.
-- name: Reconcile DNS resolvers
-  ansible.builtin.copy:
-    dest: /etc/resolv.conf
-    content: |
-      # Managed by Ansible (dietpi_base). Local edits are overwritten.
-      {% for nameserver in dietpi_base_nameservers %}
-      nameserver {{ nameserver }}
-      {% endfor %}
-    owner: root
-    group: root
-    mode: "0644"
+- name: Reconcile and verify node DNS
+  ansible.builtin.import_tasks: dns.yml
+  tags: [dns]
 
 - name: Reconcile DietPi NTP mirror
   ansible.builtin.lineinfile:

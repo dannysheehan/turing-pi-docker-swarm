@@ -12,10 +12,11 @@ dietpi_base_chrony_pool: 2.debian.pool.ntp.org
 dietpi_base_chrony_max_correction_seconds: 0.05
 dietpi_ramlog_size_mb: 50
 dietpi_min_root_free_mb: 512
-# Written to /etc/resolv.conf in this order. A public resolver comes first so
-# the router is only a fallback; it misbehaved after the 2026-09-25 power loss.
+# Independent public providers precede the router, whose DNS failed after the
+# 2026-09-25 power loss. All three still depend on the same gateway/WAN.
 dietpi_base_nameservers:
   - 9.9.9.9
+  - 1.1.1.1
   - "{{ network_gateway }}"
 
 swarm_vip_prefix: 24
