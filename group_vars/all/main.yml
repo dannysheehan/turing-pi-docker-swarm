@@ -12,6 +12,11 @@ dietpi_base_chrony_pool: 2.debian.pool.ntp.org
 dietpi_base_chrony_max_correction_seconds: 0.05
 dietpi_ramlog_size_mb: 50
 dietpi_min_root_free_mb: 512
+# Written to /etc/resolv.conf in this order. A public resolver comes first so
+# the router is only a fallback; it misbehaved after the 2026-09-25 power loss.
+dietpi_base_nameservers:
+  - 9.9.9.9
+  - "{{ network_gateway }}"
 
 swarm_vip_prefix: 24
 # Must match the single host in the primary_manager inventory group. Moved off

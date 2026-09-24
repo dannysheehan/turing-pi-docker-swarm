@@ -23,7 +23,8 @@ DietPi owns its lifecycle and platform integration:
   time daemon, and DietPi RAMlog.
 
 Ansible validates those invariants and owns live hostname, timezone, the
-managed cluster block in `/etc/hosts`, exact Docker engine package versions,
+managed cluster block in `/etc/hosts`, the DNS resolvers in
+`/etc/resolv.conf`, exact Docker engine package versions,
 Swarm membership, NFS, Keepalived, and dedicated firewall chains.
 It never rewrites ordinary DietPi networking, edits cgroup boot arguments,
 replaces RAMlog, deletes Swarm state, or silently demotes managers.
