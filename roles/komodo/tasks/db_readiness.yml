@@ -24,34 +24,53 @@
           database host, its firewall, and that PostgreSQL is listening on an
           address the cluster can reach.
 
-- name: Wait for the Komodo services to reach running state
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/docker
-      - service
-      - ps
-      - "{{ komodo_stack_name }}_{{ item }}"
-      - --filter
-      - desired-state=running
-      - --format
-      - "{{ '{{.CurrentState}}' }}"
-  loop:
-    - ferretdb
-    - komodo-core
-  register: komodo_service_check
-  changed_when: false
-  failed_when: false
-  retries: "{{ komodo_db_readiness_retries }}"
-  delay: "{{ komodo_db_readiness_delay }}"
-  until: komodo_service_check.stdout is search('^Running')
+- name: Verify Komodo startup and report the failed dependency
+  block:
+    - name: Wait for the Komodo services to reach running state
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - service
+          - ps
+          - "{{ komodo_stack_name }}_{{ item }}"
+          - --filter
+          - desired-state=running
+          - --format
+          - "{{ '{{.CurrentState}}' }}"
+      loop:
+        - ferretdb
+        - komodo-core
+      register: komodo_service_check
+      changed_when: false
+      retries: "{{ komodo_db_readiness_retries }}"
+      delay: "{{ komodo_db_readiness_delay }}"
+      until:
+        - komodo_service_check.rc == 0
+        - komodo_service_check.stdout is search('^Running')
+  rescue:
+    - name: Collect task states and errors without truncation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - stack
+          - ps
+          - "{{ komodo_stack_name }}"
+          - --no-trunc
+          - --format
+          - "{{ '{{.Name}} | {{.Node}} | {{.CurrentState}} | {{.Error}}' }}"
+      register: komodo_startup_diagnostics
+      changed_when: false
+      failed_when: false
 
-- name: Require both Komodo services to be running
-  ansible.builtin.assert:
-    that:
-      - komodo_service_check.results | rejectattr('stdout', 'search', '^Running') | list | length == 0
-    fail_msg: >-
-      FerretDB or Komodo Core never reached Running state. The usual cause is a
-      database prerequisite the DBA owns: the DocumentDB extension must be
-      installed in the '{{ komodo_pg_database }}' database, and
-      '{{ komodo_db_user }}' must be a member of documentdb_admin_role.
-      Inspect `docker service logs {{ komodo_stack_name }}_ferretdb`.
+    - name: Report why startup needs investigation
+      ansible.builtin.fail:
+        msg: |
+          Komodo services did not reach Running state.
+          {{ komodo_startup_diagnostics.stdout }}
+          {{ komodo_startup_diagnostics.stderr }}
+          Preparing: inspect the assigned node's Docker journal for image/DNS or mount errors.
+          Core mount errors: restore the NAS; do not replace its /config identity.
+          Running then failing: inspect service logs, the external database and the overlay.
+          PostgreSQL needs DocumentDB in '{{ komodo_pg_database }}' and
+          '{{ komodo_db_user }}' must belong to documentdb_admin_role.
+          See RUNBOOK.md for recovery; this check does not force-update services.

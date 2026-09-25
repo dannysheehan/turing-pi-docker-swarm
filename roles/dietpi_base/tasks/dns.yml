@@ -1,0 +1,60 @@
+---
+# Static DietPi nodes keep this regular file across boots. dietpi-config can
+# rewrite it when networking is changed; the next convergence repairs drift.
+# Do not replace a symlink owned by a resolver manager on a rebuilt node.
+- name: Validate resolver addresses before changing node DNS
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import ipaddress, json, sys
+        servers = json.loads(sys.argv[1])
+        if not isinstance(servers, list) or not 2 <= len(servers) <= 3:
+            sys.exit('dietpi_base_nameservers must be a list of two or three IP addresses')
+        try:
+            addresses = [ipaddress.ip_address(server) for server in servers
+                         if isinstance(server, str)]
+        except ValueError as error:
+            sys.exit(f'Invalid DNS resolver: {error}')
+        if len(addresses) != len(servers) or len(set(addresses)) != len(servers):
+            sys.exit('DNS resolvers must be distinct IP address strings')
+      - "{{ dietpi_base_nameservers | to_json }}"
+  changed_when: false
+  check_mode: false
+
+- name: Inspect resolver file ownership
+  ansible.builtin.stat:
+    path: /etc/resolv.conf
+    follow: false
+  register: dietpi_base_resolver_file
+
+- name: Require a static resolver file
+  ansible.builtin.assert:
+    that:
+      - dietpi_base_resolver_file.stat.isreg | default(false)
+    fail_msg: >-
+      /etc/resolv.conf must be a regular file on these static DietPi nodes.
+      Inspect the node's DNS manager before changing its resolver configuration.
+
+- name: Reconcile DNS resolvers
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: dietpi_base_resolver_config
+
+# This checks the host resolver used by image pulls, without pulling an image
+# or relying on a container that itself might need to be downloaded first.
+- name: Verify the host can resolve the Komodo image registry
+  ansible.builtin.command:
+    argv: [/usr/bin/timeout, "15", /usr/bin/getent, ahosts, ghcr.io]
+  register: dietpi_base_registry_dns
+  changed_when: false
+  check_mode: false
+  retries: 3
+  delay: 2
+  until: dietpi_base_registry_dns.rc == 0
+  when: not ansible_check_mode or not dietpi_base_resolver_config.changed

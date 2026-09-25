@@ -1,4 +1,17 @@
 ---
+- name: Prepare Komodo recovery on every eligible node
+  hosts: cluster
+  tags: [komodo, database, images]
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Reconcile DNS and cache Komodo images before deployment
+      ansible.builtin.include_role:
+        name: komodo
+        tasks_from: prepare_node
+      when: komodo_enabled | default(false) | bool
+
 - name: Reconcile shared NFS storage
   hosts: cluster
   tags: [nfs]

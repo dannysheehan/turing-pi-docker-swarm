@@ -82,6 +82,10 @@
     group: root
     mode: "0644"
 
+- name: Reconcile and verify node DNS
+  ansible.builtin.import_tasks: dns.yml
+  tags: [dns]
+
 - name: Reconcile DietPi NTP mirror
   ansible.builtin.lineinfile:
     path: /boot/dietpi.txt

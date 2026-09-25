@@ -1,0 +1,77 @@
+---
+# Both services can land on any cluster node after a power loss. Populate the
+# exact digests during convergence, while DNS and the registry are available.
+# This touches no running containers and needs neither the NAS nor 1Password.
+- name: Reconcile DNS before preparing image caches
+  ansible.builtin.import_role:
+    name: dietpi_base
+    tasks_from: dns
+
+- name: Require immutable Komodo image references
+  ansible.builtin.assert:
+    that:
+      - item is match('^\S+@sha256:[0-9a-f]{64}$')
+    fail_msg: Komodo recovery images must include a sha256 digest.
+  loop:
+    - "{{ komodo_ferretdb_image }}"
+    - "{{ komodo_image }}"
+
+- name: Inspect locally cached Komodo images by exact reference
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - --format
+      - "{{ '{{.Os}}/{{.Architecture}}' }}"
+      - "{{ item }}"
+  loop:
+    - "{{ komodo_ferretdb_image }}"
+    - "{{ komodo_image }}"
+  register: komodo_cached_images
+  changed_when: false
+  failed_when: >-
+    komodo_cached_images.rc != 0 and
+    'no such image' not in (komodo_cached_images.stderr | lower)
+  check_mode: false
+
+- name: Pull missing Komodo images with a bounded wait
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, image, pull, "{{ item.item }}"]
+  loop: "{{ komodo_cached_images.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc != 0
+    - not ansible_check_mode
+  async: 600
+  poll: 5
+  changed_when: true
+
+- name: Report images that would be cached
+  ansible.builtin.debug:
+    msg: "Would pull {{ item.item }} on {{ inventory_hostname }}."
+  loop: "{{ komodo_cached_images.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - ansible_check_mode
+    - item.rc != 0
+
+- name: Verify cached images can execute on the ARM64 nodes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - --format
+      - "{{ '{{.Os}}/{{.Architecture}}' }}"
+      - "{{ item.item }}"
+  loop: "{{ komodo_cached_images.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: komodo_verified_image
+  changed_when: false
+  failed_when: komodo_verified_image.rc != 0 or komodo_verified_image.stdout != 'linux/arm64'
+  check_mode: false
+  when: not ansible_check_mode or item.rc == 0

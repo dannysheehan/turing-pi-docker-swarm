@@ -19,7 +19,7 @@
         name: dietpi_base
         apply:
           tags: [base]
-      tags: [base]
+      tags: [base, dns]
 
     - name: Forward node logs to the central syslog receiver
       ansible.builtin.include_role:

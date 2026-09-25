@@ -1,0 +1,4 @@
+# Managed by Ansible (dietpi_base). Local edits are overwritten.
+{% for nameserver in dietpi_base_nameservers %}
+nameserver {{ nameserver }}
+{% endfor %}
